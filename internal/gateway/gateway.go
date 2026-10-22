@@ -1,0 +1,346 @@
+// Package gateway is the HTTP face of a Muster agent. It speaks the OpenAI
+// and Ollama APIs to clients, routes each request to the best node, and
+// serves requests forwarded by other agents.
+package gateway
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/maauri/muster/internal/config"
+	"github.com/maauri/muster/internal/node"
+	"github.com/maauri/muster/internal/registry"
+	"github.com/maauri/muster/internal/router"
+)
+
+const (
+	// ForwardPrefix is where agents accept requests from other agents. It
+	// only ever serves locally, so routing loops are impossible.
+	ForwardPrefix = "/muster/v1/forward"
+	// ClusterPath returns registry.Status for `muster status`.
+	ClusterPath = "/muster/v1/cluster"
+	// NodeHeader names the node that served a response.
+	NodeHeader = "X-Muster-Node"
+
+	maxBody = 64 << 20
+)
+
+// Management endpoints act on one machine's model store, so they always run
+// on the local node even though their bodies name a model.
+var localOnly = map[string]bool{
+	"/api/pull": true, "/api/push": true, "/api/create": true,
+	"/api/copy": true, "/api/delete": true,
+}
+
+// Gateway is safe for concurrent use.
+type Gateway struct {
+	reg      *registry.Registry
+	token    string
+	backend  string
+	client   *http.Client
+	inFlight atomic.Int64
+}
+
+// New returns a gateway that routes over reg and serves locally via the
+// Ollama server at backendURL.
+func New(reg *registry.Registry, token, backendURL string) *Gateway {
+	return &Gateway{
+		reg:     reg,
+		token:   token,
+		backend: strings.TrimRight(backendURL, "/"),
+		client: &http.Client{Transport: &http.Transport{
+			// No proxy: cluster traffic must never leave via an HTTP_PROXY.
+			DialContext:         (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+			MaxIdleConnsPerHost: 16,
+			IdleConnTimeout:     90 * time.Second,
+		}},
+	}
+}
+
+// InFlight is the number of requests this node's backend is serving now.
+func (g *Gateway) InFlight() int { return int(g.inFlight.Load()) }
+
+// Handler returns the agent's HTTP handler.
+func (g *Gateway) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+registry.NodePath, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, g.reg.Self())
+	})
+	mux.HandleFunc("GET "+ClusterPath, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, g.reg.Status())
+	})
+	mux.HandleFunc(ForwardPrefix+"/", g.handleForward)
+	mux.HandleFunc("GET /v1/models", g.handleOpenAIModels)
+	mux.HandleFunc("GET /api/tags", g.handleOllamaTags)
+	mux.HandleFunc("/", g.handleAPI)
+	return g.auth(mux)
+}
+
+// auth trusts genuine local callers and requires the token from everyone
+// else. "Genuine local" means a loopback peer that also addressed us by a
+// loopback host and, if it is a browser, from a loopback origin; otherwise
+// any website could reach the cluster through the user's browser
+// (cross-site requests, DNS rebinding).
+func (g *Gateway) auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g.hasToken(r) || trustedLocal(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, r, http.StatusUnauthorized,
+			"muster: cluster token required (Authorization: Bearer <token>); run `muster token` on any node")
+	})
+}
+
+func (g *Gateway) hasToken(r *http.Request) bool {
+	if t := r.Header.Get(registry.TokenHeader); t != "" {
+		return config.TokenEqual(t, g.token)
+	}
+	if t, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return config.TokenEqual(t, g.token)
+	}
+	return false
+}
+
+func trustedLocal(r *http.Request) bool {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil || !ap.Addr().Unmap().IsLoopback() || !loopbackHost(r.Host) {
+		return false
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil || !loopbackHost(u.Host) {
+			return false
+		}
+	}
+	return true
+}
+
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.IsLoopback()
+}
+
+func (g *Gateway) handleAPI(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		writeError(w, r, http.StatusRequestEntityTooLarge, "muster: request body too large")
+		return
+	}
+	model := ""
+	if r.Method == http.MethodPost && !localOnly[r.URL.Path] {
+		model = extractModel(body)
+	}
+	if model == "" {
+		g.dispatch(w, r, r.URL.Path, body, []router.Candidate{{Info: g.reg.Self(), Local: true}})
+		return
+	}
+	cands := router.Rank(model, g.reg.Candidates())
+	if len(cands) == 0 {
+		writeError(w, r, http.StatusNotFound, fmt.Sprintf(
+			"muster: model %q is not available on any node (available: %s)", model, strings.Join(g.modelNames(), ", ")))
+		return
+	}
+	g.dispatch(w, r, r.URL.Path, body, cands)
+}
+
+func (g *Gateway) handleForward(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, ForwardPrefix)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		writeError(w, r, http.StatusRequestEntityTooLarge, "muster: request body too large")
+		return
+	}
+	g.dispatch(w, r, path, body, []router.Candidate{{Info: g.reg.Self(), Local: true}})
+}
+
+func extractModel(body []byte) string {
+	var v struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &v) != nil {
+		return ""
+	}
+	return v.Model
+}
+
+// dispatch tries candidates in order. It moves to the next one only if the
+// current one fails before any response bytes reach the client.
+func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, path string, body []byte, cands []router.Candidate) {
+	var lastErr error
+	for i, c := range cands {
+		last := i == len(cands)-1
+		done := g.reg.Begin(c.Info.ID)
+		if c.Local {
+			g.inFlight.Add(1)
+		}
+		resp, err := g.send(r, c, path, body)
+		if err == nil && !last && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable) {
+			resp.Body.Close()
+			err = errors.New(resp.Status)
+		}
+		if err == nil {
+			relay(w, resp, c.Info.Name)
+			resp.Body.Close()
+		}
+		if c.Local {
+			g.inFlight.Add(-1)
+		}
+		done()
+		if err == nil {
+			return
+		}
+		if r.Context().Err() != nil {
+			return // client went away; nothing to fail over for
+		}
+		lastErr = err
+		slog.Warn("node failed, trying next", "node", c.Info.Name, "addr", c.Addr, "err", err)
+	}
+	writeError(w, r, http.StatusBadGateway, fmt.Sprintf("muster: no node could serve the request: %v", lastErr))
+}
+
+func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []byte) (*http.Response, error) {
+	target := g.backend + path
+	if !c.Local {
+		target = "http://" + c.Addr + ForwardPrefix + path
+	}
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	if c.Local && g.backend == "" {
+		return nil, errors.New("no local backend")
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	copyHeaders(req.Header, r.Header)
+	req.Header.Del("Authorization")
+	req.Header.Del(registry.TokenHeader)
+	if !c.Local {
+		req.Header.Set(registry.TokenHeader, g.token)
+	}
+	return g.client.Do(req)
+}
+
+// relay streams resp to w, flushing after every read so SSE and NDJSON
+// token streams reach the client as they are generated.
+func relay(w http.ResponseWriter, resp *http.Response, nodeName string) {
+	copyHeaders(w.Header(), resp.Header)
+	w.Header().Set(NodeHeader, nodeName)
+	w.WriteHeader(resp.StatusCode)
+	rc := http.NewResponseController(w)
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			rc.Flush()
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+var hopHeaders = map[string]bool{
+	"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+	"Proxy-Authorization": true, "Te": true, "Trailer": true,
+	"Transfer-Encoding": true, "Upgrade": true,
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		if hopHeaders[k] {
+			continue
+		}
+		dst[k] = append([]string(nil), vs...)
+	}
+}
+
+// modelNames is every model on a healthy node, normalised and sorted.
+func (g *Gateway) modelNames() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, c := range g.reg.Candidates() {
+		for _, m := range c.Info.Models {
+			n := node.NormalizeModel(m.Name)
+			if !seen[n] {
+				seen[n] = true
+				names = append(names, n)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (g *Gateway) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
+	type model struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+	data := []model{}
+	for _, n := range g.modelNames() {
+		data = append(data, model{ID: n, Object: "model", OwnedBy: "muster"})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+func (g *Gateway) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
+	type model struct {
+		Name  string `json:"name"`
+		Model string `json:"model"`
+		Size  int64  `json:"size"`
+	}
+	sizes := map[string]int64{}
+	for _, c := range g.reg.Candidates() {
+		for _, m := range c.Info.Models {
+			sizes[node.NormalizeModel(m.Name)] = m.Size
+		}
+	}
+	models := []model{}
+	for _, n := range g.modelNames() {
+		models = append(models, model{Name: n, Model: n, Size: sizes[n]})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+// writeError uses the error shape each API's clients expect.
+func writeError(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		writeJSON(w, code, map[string]any{"error": map[string]string{"message": msg, "type": "muster_error"}})
+		return
+	}
+	writeJSON(w, code, map[string]string{"error": msg})
+}

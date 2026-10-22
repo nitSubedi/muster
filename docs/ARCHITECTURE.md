@@ -92,7 +92,7 @@ Requests without a model (`/api/version`, unknown paths) go to local Ollama.
 
 - Threat: other devices on the same LAN. Not in scope: a compromised device
   inside the cluster (it has the token by definition).
-- Token: 32 random bytes, base64url, saved to `~/.config/muster/config.json`
+- Token: 32 random bytes, base64url, saved to `<user config dir>/muster/config.json`
   with mode 0600 on first run. Compared in constant time.
 - Traffic between agents is plain HTTP in v0.1. Over Tailscale it is already
   encrypted; LAN TLS is on the roadmap (ADR-0003).
