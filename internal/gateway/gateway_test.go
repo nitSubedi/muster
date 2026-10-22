@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maauri/muster/internal/node"
+	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
 )
 
@@ -22,7 +23,7 @@ const token = "test-token"
 // which node served them.
 func fakeOllama(t *testing.T, name string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" || r.Header.Get(registry.TokenHeader) != "" {
+		if r.Header.Get("Authorization") != "" || r.Header.Get(peerauth.Header) != "" {
 			t.Errorf("%s: credentials leaked to backend", name)
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -46,9 +47,10 @@ type testNode struct {
 }
 
 func newNode(t *testing.T, id string, backendURL string, models ...node.Model) *testNode {
-	reg := registry.New(token)
+	auth := peerauth.New(token)
+	reg := registry.New(auth)
 	reg.SetSelf(node.Info{ID: id, Name: id, BackendUp: backendURL != "", Models: models})
-	gw := New(reg, token, backendURL)
+	gw := New(reg, auth, token, backendURL)
 	srv := httptest.NewServer(gw.Handler())
 	t.Cleanup(srv.Close)
 	return &testNode{gw: gw, srv: srv, reg: reg}
@@ -248,7 +250,7 @@ func TestAuth(t *testing.T) {
 		{"lan without token", "192.168.1.9:5000", "192.168.1.2:7878", nil, 401},
 		{"lan with wrong token", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{"Authorization": "Bearer nope"}, 401},
 		{"lan with bearer token", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{"Authorization": "Bearer " + token}, 200},
-		{"lan with header token", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{registry.TokenHeader: token}, 200},
+		{"lan with forged peer signature", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{peerauth.Header: "v1 1 n sig"}, 401},
 		{"dns rebinding", "127.0.0.1:5000", "evil.example:7878", nil, 401},
 		{"cross-site browser", "127.0.0.1:5000", "localhost:7878", map[string]string{"Origin": "https://evil.example"}, 401},
 		{"local web app", "127.0.0.1:5000", "localhost:7878", map[string]string{"Origin": "http://localhost:3000"}, 200},
@@ -307,5 +309,64 @@ func TestInFlightCountsLocalServing(t *testing.T) {
 	}
 	if got := lap.gw.InFlight(); got != 0 {
 		t.Fatalf("in flight after completion = %d", got)
+	}
+}
+
+func TestPeerSignatureAcceptedAndProved(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL, model("llama3", false))
+	r := httptest.NewRequest(http.MethodGet, registry.NodePath, nil)
+	r.RemoteAddr, r.Host = "192.168.1.9:5000", "192.168.1.2:7878"
+	other := peerauth.New(token)
+	nonce := other.Sign(r)
+	w := httptest.NewRecorder()
+	lap.gw.Handler().ServeHTTP(w, r)
+	if w.Code != 200 || !other.CheckProof(w.Header(), nonce) {
+		t.Fatalf("status=%d proof=%q", w.Code, w.Header().Get(peerauth.ProofHeader))
+	}
+}
+
+// A healthy peer address that is taken over by an impostor (e.g. the real
+// device left and the attacker grabbed its IP) must not receive prompts.
+func TestImpostorAtPeerAddressGetsNoPrompts(t *testing.T) {
+	desk := newNode(t, "desk", fakeOllama(t, "desk-ollama").URL, model("llama3", true))
+	lap := newNode(t, "lap", fakeOllama(t, "lap-ollama").URL, model("llama3", false))
+	lap.peerWith(t, desk)
+
+	impostorAuth := peerauth.New("attacker-guess")
+	impostor := newNode(t, "evil", fakeOllama(t, "evil-ollama").URL, model("llama3", true))
+	impostor.gw.auth = impostorAuth
+	desk.srv.Config.Handler = impostor.gw.Handler()
+
+	resp, out := post(t, lap.srv.URL+"/api/chat", `{"model":"llama3","messages":[{"content":"secret plans"}]}`)
+	if resp.StatusCode != 200 || out["served_by"] != "lap-ollama" {
+		t.Fatalf("status=%d out=%v", resp.StatusCode, out)
+	}
+}
+
+func TestStaleInventory404FailsOver(t *testing.T) {
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"model 'llama3' not found"}`, http.StatusNotFound)
+	}))
+	defer gone.Close()
+	desk := newNode(t, "desk", gone.URL, model("llama3", true))
+	lap := newNode(t, "lap", fakeOllama(t, "lap-ollama").URL, model("llama3", false))
+	lap.peerWith(t, desk)
+
+	_, out := post(t, lap.srv.URL+"/api/chat", `{"model":"llama3"}`)
+	if out["served_by"] != "lap-ollama" {
+		t.Fatalf("out=%v", out)
+	}
+}
+
+func TestOversizedBodyIs413(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL, model("llama3", false))
+	big := strings.NewReader(`{"model":"llama3","x":"` + strings.Repeat("a", maxBody) + `"}`)
+	resp, err := http.Post(lap.srv.URL+"/api/chat", "application/json", big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }

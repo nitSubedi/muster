@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maauri/muster/internal/node"
+	"github.com/maauri/muster/internal/peerauth"
 )
 
 // fakePeer serves node.Info and can be told to fail.
@@ -22,11 +24,14 @@ type fakePeer struct {
 
 func newFakePeer(t *testing.T, token string, info node.Info) *fakePeer {
 	f := &fakePeer{info: info}
+	auth := peerauth.New(token)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(TokenHeader) != token {
+		nonce, ok := auth.Verify(r)
+		if !ok {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		auth.Prove(w.Header(), nonce)
 		if f.fail.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
@@ -39,13 +44,15 @@ func newFakePeer(t *testing.T, token string, info node.Info) *fakePeer {
 
 func (f *fakePeer) addr() string { return strings.TrimPrefix(f.srv.URL, "http://") }
 
+func newReg(token string) *Registry { return New(peerauth.New(token)) }
+
 func peerInfo(id string) node.Info {
 	return node.Info{ID: id, BackendUp: true, Models: []node.Model{{Name: "llama3:latest"}}}
 }
 
 func TestStaticPeerBecomesCandidate(t *testing.T) {
 	p := newFakePeer(t, "tok", peerInfo("desk"))
-	r := New("tok")
+	r := newReg("tok")
 	r.SetSelf(node.Info{ID: "lap", BackendUp: true})
 	r.AddStatic(p.addr())
 
@@ -61,7 +68,7 @@ func TestStaticPeerBecomesCandidate(t *testing.T) {
 
 func TestWrongTokenNeverHealthy(t *testing.T) {
 	p := newFakePeer(t, "right", peerInfo("desk"))
-	r := New("wrong")
+	r := newReg("wrong")
 	r.AddStatic(p.addr())
 	r.PollOnce(context.Background())
 	if len(r.Candidates()) != 0 {
@@ -74,7 +81,7 @@ func TestWrongTokenNeverHealthy(t *testing.T) {
 
 func TestUnhealthyAfterRepeatedFailures(t *testing.T) {
 	p := newFakePeer(t, "tok", peerInfo("desk"))
-	r := New("tok")
+	r := newReg("tok")
 	r.AddStatic(p.addr())
 	r.PollOnce(context.Background())
 
@@ -99,7 +106,7 @@ func TestUnhealthyAfterRepeatedFailures(t *testing.T) {
 
 func TestDiscoveredPeerForgottenWithoutBeacons(t *testing.T) {
 	p := newFakePeer(t, "tok", peerInfo("desk"))
-	r := New("tok")
+	r := newReg("tok")
 	now := time.Unix(1000, 0)
 	r.now = func() time.Time { return now }
 
@@ -117,7 +124,7 @@ func TestDiscoveredPeerForgottenWithoutBeacons(t *testing.T) {
 
 func TestStaticPeerNeverForgotten(t *testing.T) {
 	p := newFakePeer(t, "tok", peerInfo("desk"))
-	r := New("tok")
+	r := newReg("tok")
 	now := time.Unix(1000, 0)
 	r.now = func() time.Time { return now }
 	r.AddStatic(p.addr())
@@ -132,7 +139,7 @@ func TestCandidatesDedupeAndSkipSelf(t *testing.T) {
 	a := newFakePeer(t, "tok", peerInfo("desk"))
 	b := newFakePeer(t, "tok", peerInfo("desk")) // same node via second address
 	me := newFakePeer(t, "tok", peerInfo("lap")) // --peer pointing at ourselves
-	r := New("tok")
+	r := newReg("tok")
 	r.SetSelf(node.Info{ID: "lap", BackendUp: true})
 	for _, p := range []*fakePeer{a, b, me} {
 		r.AddStatic(p.addr())
@@ -145,7 +152,7 @@ func TestCandidatesDedupeAndSkipSelf(t *testing.T) {
 }
 
 func TestBackendDownExcluded(t *testing.T) {
-	r := New("tok")
+	r := newReg("tok")
 	r.SetSelf(node.Info{ID: "lap", BackendUp: false})
 	if len(r.Candidates()) != 0 {
 		t.Fatal("node with backend down must not be a candidate")
@@ -153,7 +160,7 @@ func TestBackendDownExcluded(t *testing.T) {
 }
 
 func TestBeginTracksPending(t *testing.T) {
-	r := New("tok")
+	r := newReg("tok")
 	r.SetSelf(node.Info{ID: "lap", BackendUp: true})
 	done1, done2 := r.Begin("lap"), r.Begin("lap")
 	if got := r.Candidates()[0].Pending; got != 2 {
@@ -167,5 +174,71 @@ func TestBeginTracksPending(t *testing.T) {
 	done2()
 	if got := r.Candidates()[0].Pending; got != 0 {
 		t.Fatalf("pending = %d", got)
+	}
+}
+
+// An attacker who copies the broadcast cluster ID and beacons its own
+// address must never receive the token and never become a candidate, even
+// if it answers with an attractive node.Info.
+func TestImpostorPeerNeverTrusted(t *testing.T) {
+	var sawSecret atomic.Bool
+	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, vs := range r.Header {
+			for _, v := range vs {
+				if strings.Contains(v, "SECRET") {
+					sawSecret.Store(true)
+				}
+			}
+		}
+		json.NewEncoder(w).Encode(node.Info{ID: "evil", BackendUp: true, Models: []node.Model{{Name: "llama3", Loaded: true}}})
+	}))
+	defer evil.Close()
+
+	r := newReg("SECRET-TOKEN")
+	r.Observe(strings.TrimPrefix(evil.URL, "http://"))
+	r.PollOnce(context.Background())
+	if sawSecret.Load() {
+		t.Fatal("token sent to unauthenticated peer")
+	}
+	if len(r.Candidates()) != 0 {
+		t.Fatal("impostor became a candidate")
+	}
+}
+
+func TestRedirectNotFollowed(t *testing.T) {
+	var hit atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit.Store(true) }))
+	defer other.Close()
+	redir := httptest.NewServer(http.RedirectHandler(other.URL, http.StatusTemporaryRedirect))
+	defer redir.Close()
+
+	r := newReg("tok")
+	r.AddStatic(strings.TrimPrefix(redir.URL, "http://"))
+	r.PollOnce(context.Background())
+	if hit.Load() {
+		t.Fatal("peer redirect was followed")
+	}
+}
+
+func TestDiscoveredPeersBounded(t *testing.T) {
+	r := newReg("tok")
+	for i := 0; i < MaxDiscovered*3; i++ {
+		r.Observe(fmt.Sprintf("10.0.%d.%d:7878", i/256, i%256))
+	}
+	if n := len(r.Status()) - 1; n != MaxDiscovered {
+		t.Fatalf("discovered peers = %d, want %d", n, MaxDiscovered)
+	}
+}
+
+func TestProvenPeerNotEvictedByFlood(t *testing.T) {
+	p := newFakePeer(t, "tok", peerInfo("desk"))
+	r := newReg("tok")
+	r.Observe(p.addr())
+	r.PollOnce(context.Background())
+	for i := 0; i < MaxDiscovered*3; i++ {
+		r.Observe(fmt.Sprintf("10.0.%d.%d:7878", i/256, i%256))
+	}
+	if len(r.Candidates()) != 1 {
+		t.Fatal("proven peer was evicted by a beacon flood")
 	}
 }

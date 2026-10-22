@@ -21,6 +21,7 @@ import (
 
 	"github.com/maauri/muster/internal/config"
 	"github.com/maauri/muster/internal/node"
+	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
 	"github.com/maauri/muster/internal/router"
 )
@@ -47,25 +48,33 @@ var localOnly = map[string]bool{
 // Gateway is safe for concurrent use.
 type Gateway struct {
 	reg      *registry.Registry
+	auth     *peerauth.Auth
 	token    string
 	backend  string
 	client   *http.Client
 	inFlight atomic.Int64
 }
 
-// New returns a gateway that routes over reg and serves locally via the
+// New returns a gateway that routes over reg, accepts client requests
+// bearing token, signs peer traffic with auth, and serves locally via the
 // Ollama server at backendURL.
-func New(reg *registry.Registry, token, backendURL string) *Gateway {
+func New(reg *registry.Registry, auth *peerauth.Auth, token, backendURL string) *Gateway {
+	// No overall timeout: generations legitimately run for minutes. Dead
+	// peers are detected by aggressive TCP keepalives instead (~25 s), which
+	// surfaces as a send error and triggers failover.
+	dialer := &net.Dialer{
+		Timeout:         3 * time.Second,
+		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 10 * time.Second, Interval: 5 * time.Second, Count: 3},
+	}
+	client := registry.NewPeerClient(0)
+	client.Transport.(*http.Transport).DialContext = dialer.DialContext
+	client.Transport.(*http.Transport).MaxIdleConnsPerHost = 16
 	return &Gateway{
 		reg:     reg,
+		auth:    auth,
 		token:   token,
 		backend: strings.TrimRight(backendURL, "/"),
-		client: &http.Client{Transport: &http.Transport{
-			// No proxy: cluster traffic must never leave via an HTTP_PROXY.
-			DialContext:         (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
-			MaxIdleConnsPerHost: 16,
-			IdleConnTimeout:     90 * time.Second,
-		}},
+		client:  client,
 	}
 }
 
@@ -85,16 +94,27 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", g.handleOpenAIModels)
 	mux.HandleFunc("GET /api/tags", g.handleOllamaTags)
 	mux.HandleFunc("/", g.handleAPI)
-	return g.auth(mux)
+	return g.authenticate(mux)
 }
 
-// auth trusts genuine local callers and requires the token from everyone
-// else. "Genuine local" means a loopback peer that also addressed us by a
+// authenticate admits three kinds of caller: agents with a valid peer signature
+// (answered with a proof, see peerauth), clients holding the token, and
+// genuine local callers. "Genuine local" means a loopback peer that also addressed us by a
 // loopback host and, if it is a browser, from a loopback origin; otherwise
 // any website could reach the cluster through the user's browser
 // (cross-site requests, DNS rebinding).
-func (g *Gateway) auth(next http.Handler) http.Handler {
+func (g *Gateway) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(peerauth.Header) != "" {
+			nonce, ok := g.auth.Verify(r)
+			if !ok {
+				writeError(w, r, http.StatusUnauthorized, "muster: invalid peer signature (different cluster token, or clock skew over 60s)")
+				return
+			}
+			g.auth.Prove(w.Header(), nonce)
+			next.ServeHTTP(w, r)
+			return
+		}
 		if g.hasToken(r) || trustedLocal(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -105,9 +125,6 @@ func (g *Gateway) auth(next http.Handler) http.Handler {
 }
 
 func (g *Gateway) hasToken(r *http.Request) bool {
-	if t := r.Header.Get(registry.TokenHeader); t != "" {
-		return config.TokenEqual(t, g.token)
-	}
 	if t, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 		return config.TokenEqual(t, g.token)
 	}
@@ -142,9 +159,8 @@ func loopbackHost(hostport string) bool {
 }
 
 func (g *Gateway) handleAPI(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err != nil {
-		writeError(w, r, http.StatusRequestEntityTooLarge, "muster: request body too large")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 	model := ""
@@ -152,7 +168,7 @@ func (g *Gateway) handleAPI(w http.ResponseWriter, r *http.Request) {
 		model = extractModel(body)
 	}
 	if model == "" {
-		g.dispatch(w, r, r.URL.Path, body, []router.Candidate{{Info: g.reg.Self(), Local: true}})
+		g.dispatch(w, r, r.URL.Path, body, false, []router.Candidate{{Info: g.reg.Self(), Local: true}})
 		return
 	}
 	cands := router.Rank(model, g.reg.Candidates())
@@ -161,17 +177,29 @@ func (g *Gateway) handleAPI(w http.ResponseWriter, r *http.Request) {
 			"muster: model %q is not available on any node (available: %s)", model, strings.Join(g.modelNames(), ", ")))
 		return
 	}
-	g.dispatch(w, r, r.URL.Path, body, cands)
+	g.dispatch(w, r, r.URL.Path, body, true, cands)
 }
 
 func (g *Gateway) handleForward(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, ForwardPrefix)
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err != nil {
-		writeError(w, r, http.StatusRequestEntityTooLarge, "muster: request body too large")
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
-	g.dispatch(w, r, path, body, []router.Candidate{{Info: g.reg.Self(), Local: true}})
+	g.dispatch(w, r, path, body, false, []router.Candidate{{Info: g.reg.Self(), Local: true}})
+}
+
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err == nil {
+		return body, true
+	}
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		writeError(w, r, http.StatusRequestEntityTooLarge, "muster: request body over 64 MiB")
+	}
+	// Any other error means the client went away; there is no one to answer.
+	return nil, false
 }
 
 func extractModel(body []byte) string {
@@ -185,8 +213,10 @@ func extractModel(body []byte) string {
 }
 
 // dispatch tries candidates in order. It moves to the next one only if the
-// current one fails before any response bytes reach the client.
-func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, path string, body []byte, cands []router.Candidate) {
+// current one fails before any response bytes reach the client. For routed
+// requests a 404 also moves on: inventory is up to one poll stale, so the
+// model may have just been removed from that node.
+func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, path string, body []byte, routed bool, cands []router.Candidate) {
 	var lastErr error
 	for i, c := range cands {
 		last := i == len(cands)-1
@@ -195,7 +225,7 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, path string, 
 			g.inFlight.Add(1)
 		}
 		resp, err := g.send(r, c, path, body)
-		if err == nil && !last && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable) {
+		if err == nil && !last && retryable(resp.StatusCode, routed) {
 			resp.Body.Close()
 			err = errors.New(resp.Status)
 		}
@@ -219,6 +249,13 @@ func (g *Gateway) dispatch(w http.ResponseWriter, r *http.Request, path string, 
 	writeError(w, r, http.StatusBadGateway, fmt.Sprintf("muster: no node could serve the request: %v", lastErr))
 }
 
+func retryable(code int, routed bool) bool {
+	return code == http.StatusBadGateway || code == http.StatusServiceUnavailable ||
+		(routed && code == http.StatusNotFound)
+}
+
+// send issues the request to c. Remote peers must prove they hold the
+// cluster key in their response, or the response is discarded.
 func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []byte) (*http.Response, error) {
 	target := g.backend + path
 	if !c.Local {
@@ -236,11 +273,21 @@ func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []
 	}
 	copyHeaders(req.Header, r.Header)
 	req.Header.Del("Authorization")
-	req.Header.Del(registry.TokenHeader)
-	if !c.Local {
-		req.Header.Set(registry.TokenHeader, g.token)
+	req.Header.Del(peerauth.Header)
+	if c.Local {
+		return g.client.Do(req)
 	}
-	return g.client.Do(req)
+	nonce := g.auth.Sign(req)
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if !g.auth.CheckProof(resp.Header, nonce) {
+		resp.Body.Close()
+		return nil, errors.New("peer failed authentication")
+	}
+	resp.Header.Del(peerauth.ProofHeader)
+	return resp, nil
 }
 
 // relay streams resp to w, flushing after every read so SSE and NDJSON

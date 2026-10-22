@@ -1,6 +1,6 @@
 # ADR-0003: Trust loopback, token for everything else, Ollama stays local
 
-**Status:** Accepted · 2026-10-22
+**Status:** Accepted · 2026-10-22 · Agent-to-agent auth superseded by ADR-0004
 
 ## Context
 The common "multi-machine Ollama" advice is `OLLAMA_HOST=0.0.0.0`, which

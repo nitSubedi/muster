@@ -41,14 +41,20 @@ muster agent
 
 **2. Every other device**
 
-On the first device, run `muster token`. It prints a join command:
+On the first device, print the cluster token:
 
 ```sh
-muster agent --token <your-cluster-token>
+muster token
 ```
 
-Run that on the new device. Within a few seconds, `muster status` on either
-machine shows both.
+On the new device, paste it when prompted, then start the agent:
+
+```sh
+muster join
+muster agent
+```
+
+Within a few seconds, `muster status` on either machine shows both.
 
 **3. Point your apps at Muster**
 
@@ -86,10 +92,17 @@ to. Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - Ollama is never exposed to the network. Only Muster listens, on `:7878`.
 - Requests from this device are trusted. Requests from anywhere else need the
-  cluster token as `Authorization: Bearer <token>` or `X-Muster-Token`.
+  cluster token as `Authorization: Bearer <token>`.
+- Agents never send the token to each other. They sign every request and
+  prove every response with a key derived from it, so a device on your Wi-Fi
+  that impersonates a Muster node can't steal the token or receive prompts
+  ([ADR-0004](docs/adr/0004-peer-auth-hmac-never-send-token.md)). Device clocks
+  must agree within 60 s.
 - The token is created on first run and stored with owner-only permissions
   in your user config directory (`~/Library/Application Support/muster/` on
-  macOS, `~/.config/muster/` on Linux). It is never broadcast.
+  macOS, `~/.config/muster/` on Linux, `%AppData%\muster\` on Windows, where
+  it inherits your profile's ACL). It is never broadcast. `muster join` reads
+  it from stdin so it stays out of shell history.
 - **Known limitation (v0.1):** traffic between agents is plain HTTP. Anyone
   who can sniff your LAN can read prompts in transit between your devices.
   Tailscale encrypts this for you. Native TLS is planned for v0.2.
@@ -101,10 +114,11 @@ muster agent  --listen :7878           API + peer port
               --ollama URL             local Ollama (default $OLLAMA_HOST or 127.0.0.1:11434)
               --name NAME              display name (default hostname)
               --peer HOST:PORT         static peer, repeatable
-              --token TOKEN            join an existing cluster
+              --token TOKEN            join an existing cluster (prefer `muster join`)
               --no-discovery           disable LAN broadcast
 muster status --json                   cluster view from this device
-muster token                           print the join command
+muster token                           print this cluster's token
+muster join                            save a token pasted on stdin
 ```
 
 ## Build from source

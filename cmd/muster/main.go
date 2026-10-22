@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -24,6 +26,7 @@ import (
 	"github.com/maauri/muster/internal/gateway"
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/ollama"
+	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
 )
 
@@ -35,7 +38,8 @@ const usage = `muster — every machine you own, one AI endpoint.
 Usage:
   muster agent   [flags]   run on every device
   muster status  [flags]   show the cluster from this device
-  muster token   [flags]   print the command to join another device
+  muster token   [flags]   print this cluster's token
+  muster join    [flags]   save a cluster token (paste it when prompted)
   muster version
 
 Run "muster <command> -h" for flags.
@@ -54,6 +58,8 @@ func main() {
 		err = runStatus(args)
 	case "token":
 		err = runToken(args)
+	case "join":
+		err = runJoin(args)
 	case "version", "--version", "-v":
 		fmt.Println("muster", version)
 	case "help", "-h", "--help":
@@ -84,7 +90,7 @@ func runAgent(args []string) error {
 	listen := fs.String("listen", ":7878", "address for the API and peer traffic")
 	backend := fs.String("ollama", envOr("OLLAMA_HOST", "http://127.0.0.1:11434"), "local Ollama URL")
 	name := fs.String("name", defaultName(), "node name shown in status and X-Muster-Node")
-	token := fs.String("token", os.Getenv("MUSTER_TOKEN"), "join an existing cluster with this token")
+	token := fs.String("token", os.Getenv("MUSTER_TOKEN"), "join an existing cluster with this token (prefer `muster join`)")
 	noDiscovery := fs.Bool("no-discovery", false, "disable LAN broadcast discovery (use --peer only)")
 	interval := fs.Duration("interval", 2*time.Second, "peer poll and beacon interval")
 	verbose := fs.Bool("v", false, "debug logging")
@@ -119,8 +125,9 @@ func runAgent(args []string) error {
 	backendURL := normalizeBackend(*backend)
 	cluster := config.ClusterID(cfg.Token)
 
-	reg := registry.New(cfg.Token)
-	gw := gateway.New(reg, cfg.Token, backendURL)
+	auth := peerauth.New(cfg.Token)
+	reg := registry.New(auth)
+	gw := gateway.New(reg, auth, cfg.Token, backendURL)
 	for _, p := range peers {
 		reg.AddStatic(p)
 	}
@@ -161,14 +168,20 @@ func runAgent(args []string) error {
 		}
 	}
 
-	srv := &http.Server{Addr: *listen, Handler: gw.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           gw.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Cancel in-flight requests (and their upstream calls) on Ctrl-C.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 
 	slog.Info("muster agent running",
 		"node", *name, "listen", *listen, "cluster", cluster, "models", len(reg.Self().Models))
 	fmt.Fprintf(os.Stderr, "\n  Point your apps at http://localhost:%d  (OpenAI: /v1, Ollama: OLLAMA_HOST=http://localhost:%d)\n", port, port)
-	fmt.Fprintf(os.Stderr, "  Add another device: run `muster token` here and paste the command there.\n\n")
+	fmt.Fprintf(os.Stderr, "  Add another device: run `muster token` here, then `muster join` there.\n\n")
 
 	select {
 	case err := <-errc:
@@ -176,9 +189,12 @@ func runAgent(args []string) error {
 	case <-ctx.Done():
 	}
 	slog.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("forced shutdown with requests still open", "err", err)
+	}
+	return nil
 }
 
 func runStatus(args []string) error {
@@ -282,8 +298,35 @@ func runToken(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Run this on the device you want to add (keep the token private):")
-	fmt.Printf("muster agent --token %s\n", cfg.Token)
+	fmt.Fprintln(os.Stderr, "Cluster token (keep it private). On the new device run `muster join` and paste it:")
+	fmt.Println(cfg.Token)
+	return nil
+}
+
+// runJoin reads the token from stdin rather than argv, so it doesn't land
+// in shell history or the process list.
+func runJoin(args []string) error {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	cfgPath := configFlag(fs)
+	fs.Parse(args)
+	cfg, _, err := config.LoadOrCreate(*cfgPath)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(os.Stderr, "Paste the cluster token from `muster token` on another device: ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return fmt.Errorf("no token entered")
+	}
+	tok := strings.TrimSpace(line)
+	if len(tok) < 20 || strings.ContainsAny(tok, " \t") {
+		return fmt.Errorf("that doesn't look like a muster token")
+	}
+	cfg.Token = tok
+	if err := config.Save(*cfgPath, cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Joined cluster %s. Start (or restart) `muster agent`.\n", config.ClusterID(tok))
 	return nil
 }
 
@@ -302,11 +345,22 @@ func normalizeBackend(s string) string {
 	if !strings.Contains(s, "://") {
 		s = "http://" + s
 	}
-	s = strings.Replace(s, "://0.0.0.0", "://127.0.0.1", 1)
-	if h := strings.TrimPrefix(strings.TrimPrefix(s, "http://"), "https://"); !strings.Contains(h, ":") {
-		s += ":11434"
+	u, err := url.Parse(s)
+	if err != nil {
+		return strings.TrimRight(s, "/")
 	}
-	return strings.TrimRight(s, "/")
+	host, port := u.Hostname(), u.Port()
+	switch host {
+	case "0.0.0.0", "":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	if port == "" {
+		port = "11434"
+	}
+	u.Host = net.JoinHostPort(host, port)
+	return strings.TrimRight(u.String(), "/")
 }
 
 func defaultName() string {

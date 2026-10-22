@@ -28,6 +28,7 @@ and only token-authenticated callers get past it.
 | `internal/node` | `Info` type; collect local hardware (CPU, RAM, NVIDIA GPU) |
 | `internal/ollama` | Minimal client for `/api/tags` and `/api/ps` |
 | `internal/discovery` | UDP broadcast beacons (announce + listen) |
+| `internal/peerauth` | HMAC request signing and response proofs between agents |
 | `internal/registry` | Live view of all nodes: self + peers, health, expiry, polling |
 | `internal/router` | Pure function: (model, nodes) → ordered candidates |
 | `internal/gateway` | HTTP server: API compatibility, auth, proxy with failover, aggregation |
@@ -43,8 +44,10 @@ heavily tested package.
 - `cluster` is the first 8 bytes (hex) of `SHA-256(token)`. Agents ignore
   beacons from other clusters, so two households on one café Wi-Fi never mix.
   The token itself is never broadcast.
-- The beacon only says "I exist at this IP:port". The receiver then polls
-  `GET /muster/v1/node` with the token to fetch full `node.Info`.
+- The beacon only says "I exist at this IP:port", and anyone can forge it.
+  The receiver polls `GET /muster/v1/node` with a signed request, and the peer
+  becomes a candidate only if its response carries a valid proof (ADR-0004).
+  At most 64 beacon-discovered peers are tracked; unproven ones are evicted first.
 - Static peers (`--peer`) skip beacons and are polled directly. This is the
   Tailscale / routed-network path.
 
@@ -70,18 +73,22 @@ candidate list. Order by, in priority:
 6. Node ID, for determinism.
 
 The gateway tries candidates in order, moving on only when a candidate fails
-**before any response bytes are sent** (connection error, 502, 503).
+**before any response bytes are sent**: connection error, missing peer proof,
+502, 503, or 404 (inventory can be one poll stale). Dead peers mid-request
+are detected by TCP keepalive (~25 s); there is deliberately no response
+timeout, because long generations are legitimate.
 
 ## Request path
 
-1. Client → gateway. Auth: loopback is trusted; anyone else needs the token
-   (`Authorization: Bearer <token>` or `X-Muster-Token`).
+1. Client → gateway. Auth: genuine loopback callers (loopback address *and*
+   loopback Host/Origin) are trusted; other clients need
+   `Authorization: Bearer <token>`; agents use peer signatures.
 2. Gateway reads the body (≤ 64 MiB) and extracts `"model"`.
 3. Router returns candidates. No candidates → `404` listing known models.
-4. Local candidate: proxy to Ollama. Remote: proxy to
-   `http://peer/muster/v1/forward/<path>` with the token and
-   `X-Muster-Hop: 1`. The forward endpoint only ever serves locally, which
-   makes routing loops impossible.
+4. Local candidate: proxy to Ollama. Remote: proxy a signed request to
+   `http://peer/muster/v1/forward/<path>` and require a valid proof on the
+   response. The forward endpoint only ever serves locally, which makes routing
+   loops impossible.
 5. Response streams back with a flush after every read, so SSE (OpenAI) and
    NDJSON (Ollama) streaming work unchanged. `X-Muster-Node` names the server.
 
@@ -94,5 +101,7 @@ Requests without a model (`/api/version`, unknown paths) go to local Ollama.
   inside the cluster (it has the token by definition).
 - Token: 32 random bytes, base64url, saved to `<user config dir>/muster/config.json`
   with mode 0600 on first run. Compared in constant time.
-- Traffic between agents is plain HTTP in v0.1. Over Tailscale it is already
-  encrypted; LAN TLS is on the roadmap (ADR-0003).
+- Agents never send the token to each other; they sign requests and prove
+  responses with an HMAC key derived from it (ADR-0004).
+- Traffic between agents is plain HTTP in v0.1, so prompts are readable by a
+  LAN sniffer. Over Tailscale it is already encrypted; LAN TLS is v0.2.

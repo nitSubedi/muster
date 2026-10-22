@@ -39,6 +39,8 @@ func totalMemory() uint64 {
 		}
 		defer f.Close()
 		return parseMeminfo(bufio.NewScanner(f))
+	case "windows":
+		return windowsMemory()
 	}
 	return 0
 }

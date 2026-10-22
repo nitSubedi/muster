@@ -5,13 +5,17 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/maauri/muster/internal/node"
+	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/router"
 )
 
@@ -20,11 +24,29 @@ const (
 	UnhealthyAfter = 3
 	// ForgetAfter without a beacon removes a discovered (non-static) peer.
 	ForgetAfter = 30 * time.Second
+	// MaxDiscovered bounds peers learned from beacons, which anyone on the
+	// LAN can send.
+	MaxDiscovered = 64
 	// NodePath is the agent endpoint that returns node.Info.
 	NodePath = "/muster/v1/node"
-	// TokenHeader carries the cluster token between agents.
-	TokenHeader = "X-Muster-Token"
+
+	maxInfoBytes = 1 << 20
 )
+
+// NewPeerClient returns the HTTP client for agent-to-agent traffic. It never
+// uses an environment proxy and never follows redirects, so requests only
+// ever reach the peer they were addressed to.
+func NewPeerClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     90 * time.Second,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
 
 type peer struct {
 	addr       string
@@ -38,7 +60,7 @@ type peer struct {
 
 // Registry is safe for concurrent use.
 type Registry struct {
-	token  string
+	auth   *peerauth.Auth
 	client *http.Client
 	now    func() time.Time
 
@@ -48,11 +70,11 @@ type Registry struct {
 	pending map[string]int   // by node ID
 }
 
-// New returns an empty registry that authenticates to peers with token.
-func New(token string) *Registry {
+// New returns an empty registry that authenticates peers with auth.
+func New(auth *peerauth.Auth) *Registry {
 	return &Registry{
-		token:   token,
-		client:  &http.Client{Timeout: 2 * time.Second},
+		auth:    auth,
+		client:  NewPeerClient(2 * time.Second),
 		now:     time.Now,
 		peers:   map[string]*peer{},
 		pending: map[string]int{},
@@ -84,16 +106,43 @@ func (r *Registry) AddStatic(addr string) {
 	r.peers[addr] = &peer{addr: addr, static: true}
 }
 
-// Observe records a discovery beacon from addr.
+// Observe records a discovery beacon from addr. Beacons are unauthenticated,
+// so a new address is only polled; it becomes a candidate after proving it
+// holds the cluster key. When the discovered set is full, a peer that has
+// never proved itself is evicted to make room, so spoofed beacons cannot
+// lock out real devices for long.
 func (r *Registry) Observe(addr string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, ok := r.peers[addr]
-	if !ok {
-		p = &peer{addr: addr}
-		r.peers[addr] = p
+	if p, ok := r.peers[addr]; ok {
+		p.lastBeacon = r.now()
+		return
 	}
-	p.lastBeacon = r.now()
+	if r.discovered() >= MaxDiscovered && !r.evictUnproven() {
+		return
+	}
+	r.peers[addr] = &peer{addr: addr, lastBeacon: r.now()}
+}
+
+// discovered and evictUnproven must be called with r.mu held.
+func (r *Registry) discovered() int {
+	n := 0
+	for _, p := range r.peers {
+		if !p.static {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *Registry) evictUnproven() bool {
+	for addr, p := range r.peers {
+		if !p.static && !p.polled {
+			delete(r.peers, addr)
+			return true
+		}
+	}
+	return false
 }
 
 // PollOnce refreshes every peer concurrently and forgets stale ones.
@@ -145,7 +194,7 @@ func (r *Registry) fetch(ctx context.Context, addr string) (node.Info, error) {
 	if err != nil {
 		return node.Info{}, err
 	}
-	req.Header.Set(TokenHeader, r.token)
+	nonce := r.auth.Sign(req)
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return node.Info{}, err
@@ -154,8 +203,11 @@ func (r *Registry) fetch(ctx context.Context, addr string) (node.Info, error) {
 	if resp.StatusCode != http.StatusOK {
 		return node.Info{}, fmt.Errorf("%s", resp.Status)
 	}
+	if !r.auth.CheckProof(resp.Header, nonce) {
+		return node.Info{}, errors.New("peer failed authentication (different cluster token?)")
+	}
 	var info node.Info
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxInfoBytes)).Decode(&info); err != nil {
 		return node.Info{}, err
 	}
 	if info.ID == "" {

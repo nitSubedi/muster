@@ -10,6 +10,8 @@ func TestNormalizeBackend(t *testing.T) {
 		"0.0.0.0":                 "http://127.0.0.1:11434",
 		"localhost":               "http://localhost:11434",
 		"https://gpu.lan:8443":    "https://gpu.lan:8443",
+		"http://[::1]":            "http://[::1]:11434",
+		"[::]:11434":              "http://[::1]:11434",
 	}
 	for in, want := range cases {
 		if got := normalizeBackend(in); got != want {
