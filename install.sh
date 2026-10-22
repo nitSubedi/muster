@@ -1,5 +1,5 @@
 #!/bin/sh
-# Muster installer: curl -fsSL https://raw.githubusercontent.com/maauri/muster/main/install.sh | sh
+# Muster installer: curl -fsSL https://raw.githubusercontent.com/nitSubedi/muster/main/install.sh | sh
 #
 # Downloads the release binary for this OS/arch, verifies its SHA-256
 # against the release's SHA256SUMS, and installs it without sudo when
@@ -14,7 +14,7 @@
 set -eu
 
 main() {
-	REPO="maauri/muster"
+	REPO="nitSubedi/muster"
 	VERSION="${MUSTER_VERSION:-latest}"
 	if [ -n "${MUSTER_BASE_URL:-}" ]; then
 		BASE="$MUSTER_BASE_URL"

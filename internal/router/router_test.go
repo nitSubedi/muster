@@ -3,7 +3,7 @@ package router
 import (
 	"testing"
 
-	"github.com/maauri/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/node"
 )
 
 func cand(id string, local bool, mem uint64, inflight, pending int, models ...node.Model) Candidate {

@@ -31,8 +31,8 @@ desktop  192.168.1.20:7878  ready  linux/amd64 16cpu 64GB +RTX 4090   1     qwen
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/maauri/muster/main/install.sh | sh
-# or: brew install maauri/tap/muster
+curl -fsSL https://raw.githubusercontent.com/nitSubedi/muster/main/install.sh | sh
+# or: brew install nitSubedi/tap/muster
 ```
 
 The installer verifies the binary's SHA-256 against the release checksums,

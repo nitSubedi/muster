@@ -12,12 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maauri/muster/internal/gateway"
-	"github.com/maauri/muster/internal/muxlisten"
-	"github.com/maauri/muster/internal/node"
-	"github.com/maauri/muster/internal/peerauth"
-	"github.com/maauri/muster/internal/registry"
-	"github.com/maauri/muster/internal/tlsid"
+	"github.com/nitSubedi/muster/internal/gateway"
+	"github.com/nitSubedi/muster/internal/muxlisten"
+	"github.com/nitSubedi/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/peerauth"
+	"github.com/nitSubedi/muster/internal/registry"
+	"github.com/nitSubedi/muster/internal/tlsid"
 )
 
 const token = "doctor-test-token"

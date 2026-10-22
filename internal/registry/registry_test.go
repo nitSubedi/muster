@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maauri/muster/internal/node"
-	"github.com/maauri/muster/internal/peerauth"
-	"github.com/maauri/muster/internal/tlsid"
+	"github.com/nitSubedi/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/peerauth"
+	"github.com/nitSubedi/muster/internal/tlsid"
 )
 
 // fakePeer serves node.Info and can be told to fail.

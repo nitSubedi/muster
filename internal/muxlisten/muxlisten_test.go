@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maauri/muster/internal/tlsid"
+	"github.com/nitSubedi/muster/internal/tlsid"
 )
 
 func TestServesTLSAndPlainOnOnePort(t *testing.T) {

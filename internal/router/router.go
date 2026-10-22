@@ -6,7 +6,7 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/maauri/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/node"
 )
 
 // Candidate is a healthy node as seen by one gateway.

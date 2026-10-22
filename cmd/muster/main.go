@@ -22,17 +22,17 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/maauri/muster/internal/config"
-	"github.com/maauri/muster/internal/discovery"
-	"github.com/maauri/muster/internal/doctor"
-	"github.com/maauri/muster/internal/gateway"
-	"github.com/maauri/muster/internal/muxlisten"
-	"github.com/maauri/muster/internal/node"
-	"github.com/maauri/muster/internal/ollama"
-	"github.com/maauri/muster/internal/peerauth"
-	"github.com/maauri/muster/internal/registry"
-	"github.com/maauri/muster/internal/service"
-	"github.com/maauri/muster/internal/tlsid"
+	"github.com/nitSubedi/muster/internal/config"
+	"github.com/nitSubedi/muster/internal/discovery"
+	"github.com/nitSubedi/muster/internal/doctor"
+	"github.com/nitSubedi/muster/internal/gateway"
+	"github.com/nitSubedi/muster/internal/muxlisten"
+	"github.com/nitSubedi/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/ollama"
+	"github.com/nitSubedi/muster/internal/peerauth"
+	"github.com/nitSubedi/muster/internal/registry"
+	"github.com/nitSubedi/muster/internal/service"
+	"github.com/nitSubedi/muster/internal/tlsid"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".

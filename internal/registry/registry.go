@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maauri/muster/internal/node"
-	"github.com/maauri/muster/internal/peerauth"
-	"github.com/maauri/muster/internal/router"
-	"github.com/maauri/muster/internal/tlsid"
+	"github.com/nitSubedi/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/peerauth"
+	"github.com/nitSubedi/muster/internal/router"
+	"github.com/nitSubedi/muster/internal/tlsid"
 )
 
 const (

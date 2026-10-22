@@ -1,8 +1,8 @@
 #!/bin/sh
 # Renders the Homebrew formula for a release: render.sh v0.2.0 dist/SHA256SUMS
-# Publish the output to the tap repo (github.com/maauri/homebrew-tap) as Formula/muster.rb.
+# Publish the output to the tap repo (github.com/nitSubedi/homebrew-tap) as Formula/muster.rb.
 set -eu
-tag="$1"; sums="$2"; repo="${REPO:-maauri/muster}"
+tag="$1"; sums="$2"; repo="${REPO:-nitSubedi/muster}"
 sum() { grep " $1\$" "$sums" | cut -d' ' -f1; }
 cat <<RB
 class Muster < Formula

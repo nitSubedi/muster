@@ -22,12 +22,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/maauri/muster/internal/config"
-	"github.com/maauri/muster/internal/node"
-	"github.com/maauri/muster/internal/peerauth"
-	"github.com/maauri/muster/internal/registry"
-	"github.com/maauri/muster/internal/router"
-	"github.com/maauri/muster/internal/tlsid"
+	"github.com/nitSubedi/muster/internal/config"
+	"github.com/nitSubedi/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/peerauth"
+	"github.com/nitSubedi/muster/internal/registry"
+	"github.com/nitSubedi/muster/internal/router"
+	"github.com/nitSubedi/muster/internal/tlsid"
 )
 
 const (

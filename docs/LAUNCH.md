@@ -58,5 +58,5 @@ The benchmark post does double duty: it is the strongest marketing asset
 2. **Name and handle.** Check that `muster` is free on GitHub, Homebrew and a
    `.dev`/`.sh` domain before launch day. Rename now if it isn't; it's cheap
    today and expensive later.
-3. **GitHub owner.** The module path is `github.com/maauri/muster`. Change it
+3. **GitHub owner.** The module path is `github.com/nitSubedi/muster`. Change it
    if publishing under a different account or org.

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/maauri/muster/internal/node"
+	"github.com/nitSubedi/muster/internal/node"
 )
 
 // Client talks to one Ollama server.
