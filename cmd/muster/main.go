@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,6 +30,7 @@ import (
 	"github.com/maauri/muster/internal/ollama"
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
+	"github.com/maauri/muster/internal/service"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -42,6 +44,8 @@ Usage:
   muster token   [flags]   print this cluster's token
   muster join    [flags]   save a cluster token (paste it when prompted)
   muster doctor  [flags]   find out why a device isn't working, with fixes
+  muster service install [agent flags] | uninstall | status
+                           run the agent at login (no sudo)
   muster version
 
 Run "muster <command> -h" for flags.
@@ -64,6 +68,8 @@ func main() {
 		err = runJoin(args)
 	case "doctor":
 		err = runDoctor(args)
+	case "service":
+		err = runService(args)
 	case "version", "--version", "-v":
 		fmt.Println("muster", version)
 	case "help", "-h", "--help":
@@ -368,6 +374,67 @@ func runDoctor(args []string) error {
 	}
 	fmt.Println("\nAll good.")
 	return nil
+}
+
+func runService(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: muster service install [agent flags] | uninstall | status")
+	}
+	m, err := service.NewManager()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "install":
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if exe, err = filepath.EvalSymlinks(exe); err != nil {
+			return err
+		}
+		if strings.HasPrefix(exe, os.TempDir()) || strings.Contains(exe, "/go-build") {
+			return fmt.Errorf("%s is a temporary binary; install muster somewhere permanent first", exe)
+		}
+		agentArgs := args[1:]
+		// Services don't inherit the shell environment, so capture it now.
+		if v := os.Getenv("OLLAMA_HOST"); v != "" && !hasFlag(agentArgs, "ollama") {
+			agentArgs = append(agentArgs, "--ollama", normalizeBackend(v))
+		}
+		if err := m.Install(service.Spec{Exe: exe, Args: agentArgs}); err != nil {
+			return err
+		}
+		path, _ := m.Path()
+		fmt.Fprintf(os.Stderr, "Installed %s\nMuster now starts at login. Logs: %s\n", path, m.LogHint())
+		if m.OS == "linux" {
+			fmt.Fprintf(os.Stderr, "To keep it running while you're logged out (servers): loginctl enable-linger %s\n", os.Getenv("USER"))
+		}
+		return nil
+	case "uninstall":
+		if err := m.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stderr, "Removed. Muster will no longer start at login.")
+		return nil
+	case "status":
+		out, err := m.Status()
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
+		return nil
+	}
+	return fmt.Errorf("unknown service command %q", args[0])
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		a = strings.TrimLeft(a, "-")
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func listenPort(listen string) (int, error) {

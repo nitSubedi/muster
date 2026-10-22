@@ -10,6 +10,10 @@
   macOS, Windows). Verified on the Rocky field box (field tests F1–F3).
 - `/muster/v1/probe`: an authenticated agent dials back only to the
   caller's own IP, so it can't be pointed at third parties.
+- `muster service install|uninstall|status`: run at login via a per-user
+  launchd agent (macOS) or `systemd --user` unit (Linux), with no sudo and
+  automatic restart on crash. Verified on Rocky 9.6 (install, kill -9 →
+  restart in ~5 s, uninstall).
 - `muster status` names the peer's actual port in unreachable diagnoses.
 
 ## Unreleased — v0.1.0

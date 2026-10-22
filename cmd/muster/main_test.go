@@ -28,3 +28,12 @@ func TestListenPort(t *testing.T) {
 		t.Fatal("expected error for missing colon")
 	}
 }
+
+func TestHasFlag(t *testing.T) {
+	if !hasFlag([]string{"--name", "x", "--ollama", "u"}, "ollama") || !hasFlag([]string{"-ollama=u"}, "ollama") {
+		t.Fatal("flag not found")
+	}
+	if hasFlag([]string{"--ollama-ish"}, "ollama") || hasFlag([]string{"ollama"}, "name") {
+		t.Fatal("false positive")
+	}
+}

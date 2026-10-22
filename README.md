@@ -83,6 +83,19 @@ On Ubuntu with ufw enabled, run `sudo ufw allow 7878/tcp && sudo ufw allow 7879/
 Every response includes an `X-Muster-Node` header naming the machine that
 served it.
 
+## Run at login
+
+```sh
+muster service install            # add any agent flags, e.g. --peer desktop.ts.net:7878
+muster service status
+muster service uninstall
+```
+
+This uses a per-user launchd agent on macOS and a `systemd --user` unit on
+Linux. No sudo is needed, it restarts automatically if it crashes, and
+`OLLAMA_HOST` is captured at install time. On a headless Linux server, also
+run `loginctl enable-linger $USER` so it keeps running after you log out.
+
 ## When something doesn't work
 
 ```sh
@@ -156,6 +169,7 @@ muster status --json                   cluster view from this device
 muster token                           print this cluster's token
 muster join                            save a token pasted on stdin
 muster doctor                          diagnose this device, with fixes
+muster service install|uninstall|status   run at login (no sudo)
 ```
 
 ## Build from source
