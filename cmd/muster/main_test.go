@@ -50,3 +50,28 @@ func TestStablePathAvoidsHomebrewCellar(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveBackendIgnoresMusterInEnv(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "http://localhost:7878")
+	if got, err := resolveBackend("", 7878); err != nil || got != defaultOllama {
+		t.Fatalf("got %q %v, want default", got, err)
+	}
+	t.Setenv("OLLAMA_HOST", "127.0.0.1:7878")
+	if got, _ := resolveBackend("", 7878); got != defaultOllama {
+		t.Fatalf("got %q", got)
+	}
+	t.Setenv("OLLAMA_HOST", "http://127.0.0.1:11500")
+	if got, _ := resolveBackend("", 7878); got != "http://127.0.0.1:11500" {
+		t.Fatalf("real Ollama in env ignored: %q", got)
+	}
+	t.Setenv("OLLAMA_HOST", "")
+	if got, _ := resolveBackend("", 7878); got != defaultOllama {
+		t.Fatalf("got %q", got)
+	}
+	if _, err := resolveBackend("localhost:7878", 7878); err == nil {
+		t.Fatal("explicit --ollama pointing at Muster accepted")
+	}
+	if got, _ := resolveBackend("http://gpu.lan:7878", 7878); got != "http://gpu.lan:7878" {
+		t.Fatalf("remote host on same port wrongly rejected: %q", got)
+	}
+}

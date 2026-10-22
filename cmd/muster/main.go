@@ -100,7 +100,7 @@ func runAgent(args []string) error {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	cfgPath := configFlag(fs)
 	listen := fs.String("listen", ":7878", "address for the API and peer traffic")
-	backend := fs.String("ollama", envOr("OLLAMA_HOST", "http://127.0.0.1:11434"), "local Ollama URL")
+	backend := fs.String("ollama", "", "local Ollama URL (default: $OLLAMA_HOST unless it points at Muster, else 127.0.0.1:11434)")
 	name := fs.String("name", defaultName(), "node name shown in status and X-Muster-Node")
 	token := fs.String("token", os.Getenv("MUSTER_TOKEN"), "join an existing cluster with this token (prefer `muster join`)")
 	noDiscovery := fs.Bool("no-discovery", false, "disable LAN broadcast discovery (use --peer only)")
@@ -134,7 +134,10 @@ func runAgent(args []string) error {
 	if err != nil {
 		return err
 	}
-	backendURL := normalizeBackend(*backend)
+	backendURL, err := resolveBackend(*backend, port)
+	if err != nil {
+		return err
+	}
 	cluster := config.ClusterID(cfg.Token)
 
 	id, err := tlsid.LoadOrCreate(filepath.Dir(*cfgPath))
@@ -354,8 +357,18 @@ func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	cfgPath := configFlag(fs)
 	addr := fs.String("addr", "http://127.0.0.1:7878", "local agent URL")
-	backend := fs.String("ollama", envOr("OLLAMA_HOST", "http://127.0.0.1:11434"), "local Ollama URL")
+	backend := fs.String("ollama", "", "local Ollama URL (default: $OLLAMA_HOST unless it points at Muster, else 127.0.0.1:11434)")
 	fs.Parse(args)
+	agentPort := 7878
+	if u, err := url.Parse(*addr); err == nil {
+		if p, err := strconv.Atoi(u.Port()); err == nil {
+			agentPort = p
+		}
+	}
+	backendURL, err := resolveBackend(*backend, agentPort)
+	if err != nil {
+		return err
+	}
 
 	var auth *peerauth.Auth
 	if b, err := os.ReadFile(*cfgPath); err == nil {
@@ -366,7 +379,7 @@ func runDoctor(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	results := doctor.Run(ctx, doctor.DefaultEnv(*addr, normalizeBackend(*backend), *cfgPath, auth))
+	results := doctor.Run(ctx, doctor.DefaultEnv(*addr, backendURL, *cfgPath, auth))
 
 	icons := map[doctor.Status]string{doctor.OK: "✔", doctor.Warn: "⚠", doctor.Fail: "✘", doctor.Skip: "–"}
 	failed := 0
@@ -402,7 +415,7 @@ func runService(args []string) error {
 		}
 		agentArgs := args[1:]
 		// Services don't inherit the shell environment, so capture it now.
-		if v := os.Getenv("OLLAMA_HOST"); v != "" && !hasFlag(agentArgs, "ollama") {
+		if v := os.Getenv("OLLAMA_HOST"); v != "" && !hasFlag(agentArgs, "ollama") && !pointsAtMuster(normalizeBackend(v), 7878) {
 			agentArgs = append(agentArgs, "--ollama", normalizeBackend(v))
 		}
 		if err := m.Install(service.Spec{Exe: exe, Args: agentArgs}); err != nil {
@@ -477,6 +490,43 @@ func listenPort(listen string) (int, error) {
 	return strconv.Atoi(p)
 }
 
+const defaultOllama = "http://127.0.0.1:11434"
+
+// resolveBackend picks the Ollama URL. Users are told to set
+// OLLAMA_HOST=http://localhost:7878 so their apps use Muster; the agent must
+// not then treat itself as its own backend.
+func resolveBackend(flagValue string, musterPort int) (string, error) {
+	if flagValue != "" {
+		u := normalizeBackend(flagValue)
+		if pointsAtMuster(u, musterPort) {
+			return "", fmt.Errorf("--ollama %s points at Muster itself; use your Ollama address, usually %s", flagValue, defaultOllama)
+		}
+		return u, nil
+	}
+	if v := os.Getenv("OLLAMA_HOST"); v != "" {
+		u := normalizeBackend(v)
+		if !pointsAtMuster(u, musterPort) {
+			return u, nil
+		}
+		slog.Debug("ignoring OLLAMA_HOST because it points at Muster", "OLLAMA_HOST", v)
+	}
+	return defaultOllama, nil
+}
+
+// pointsAtMuster reports whether u is a loopback address on Muster's port.
+func pointsAtMuster(u string, musterPort int) bool {
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Port() != strconv.Itoa(musterPort) {
+		return false
+	}
+	h := parsed.Hostname()
+	if h == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(h)
+	return err == nil && (a.IsLoopback() || a.IsUnspecified())
+}
+
 // normalizeBackend accepts OLLAMA_HOST forms like "0.0.0.0:11434" or
 // "localhost" and returns a URL. A wildcard bind address is rewritten to
 // loopback, since that is where we should connect.
@@ -510,9 +560,3 @@ func defaultName() string {
 	return strings.TrimSuffix(h, ".local")
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}

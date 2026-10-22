@@ -549,3 +549,29 @@ func TestTagsCompatibleWithOllamaCLI(t *testing.T) {
 		t.Errorf("backend entry not passed through: %v", out.Models[0])
 	}
 }
+
+// OLLAMA_HOST=localhost:7878 is how users point apps at Muster. If the agent
+// also picks it up as its backend, requests must fail fast, not loop forever.
+func TestBackendPointingAtSelfIsDetected(t *testing.T) {
+	lap := newNode(t, "lap", "", model("llama3", false))
+	lap.gw.backend = lap.srv.URL
+	lap.reg.SetSelf(node.Info{ID: "lap", Name: "lap", BackendUp: true, Models: []node.Model{{Name: "llama3"}}})
+
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Post(lap.srv.URL+"/api/chat", "application/json", strings.NewReader(`{"model":"llama3"}`))
+		if err == nil {
+			done <- resp
+		}
+	}()
+	select {
+	case resp := <-done:
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusLoopDetected || !strings.Contains(string(b), "--ollama") {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request looped instead of failing fast")
+	}
+}

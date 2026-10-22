@@ -42,6 +42,9 @@ const (
 	// can learn whether others can reach it (firewalls are invisible from
 	// the inside).
 	ProbePath = "/muster/v1/probe"
+	// ViaHeader marks requests this agent sends to its own backend. Seeing
+	// our own ID come back means the backend URL points at Muster itself.
+	ViaHeader = "X-Muster-Via"
 	// NodeHeader names the node that served a response.
 	NodeHeader = "X-Muster-Node"
 
@@ -204,7 +207,21 @@ func loopbackHost(hostport string) bool {
 	return err == nil && a.IsLoopback()
 }
 
+// looped reports (and answers) a request that came back to us through our
+// own backend, which happens when the backend URL is this agent.
+func (g *Gateway) looped(w http.ResponseWriter, r *http.Request) bool {
+	if id := g.reg.Self().ID; id != "" && r.Header.Get(ViaHeader) == id {
+		writeError(w, r, http.StatusLoopDetected,
+			"muster: the backend URL points at this Muster agent, not Ollama; start the agent with --ollama http://127.0.0.1:11434")
+		return true
+	}
+	return false
+}
+
 func (g *Gateway) handleAPI(w http.ResponseWriter, r *http.Request) {
+	if g.looped(w, r) {
+		return
+	}
 	body, ok := readBody(w, r)
 	if !ok {
 		return
@@ -227,6 +244,9 @@ func (g *Gateway) handleAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleForward(w http.ResponseWriter, r *http.Request) {
+	if g.looped(w, r) {
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, ForwardPrefix)
 	body, ok := readBody(w, r)
 	if !ok {
@@ -354,6 +374,7 @@ func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []
 	req.Header.Del("Authorization")
 	req.Header.Del(peerauth.Header)
 	if c.Local {
+		req.Header.Set(ViaHeader, g.reg.Self().ID)
 		return g.client.Do(req)
 	}
 	nonce := g.auth.Sign(req)

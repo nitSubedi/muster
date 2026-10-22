@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.3 — 2026-10-22
+
+### Fixed
+- **Request loop when `OLLAMA_HOST` points at Muster.** The README tells
+  users to set `OLLAMA_HOST=http://localhost:7878` so apps use Muster, but the
+  agent also read it as its own backend and forwarded requests to itself.
+  The agent, `doctor` and `service install` now ignore an `OLLAMA_HOST` that
+  points at Muster, an explicit `--ollama` pointing at Muster is rejected,
+  and a loop guard (`508 Loop Detected` with the fix) catches anything else.
+  `doctor` no longer reports Muster's own port as "Ollama exposed".
+
 ## v0.2.2 — 2026-10-22
 
 ### Changed
