@@ -21,9 +21,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/nitSubedi/muster/internal/bench"
 	"github.com/nitSubedi/muster/internal/config"
 	"github.com/nitSubedi/muster/internal/node"
 	"github.com/nitSubedi/muster/internal/peerauth"
@@ -42,6 +44,12 @@ const (
 	// can learn whether others can reach it (firewalls are invisible from
 	// the inside).
 	ProbePath = "/muster/v1/probe"
+	// BenchPrefix serves `muster bench`: echo (round trips), download
+	// (throughput) and device (local memory/LLM measurements).
+	BenchPrefix = bench.Prefix
+	// MaxBenchDownload caps one throughput measurement.
+	MaxBenchDownload = bench.MaxDownload
+
 	// ViaHeader marks requests this agent sends to its own backend. Seeing
 	// our own ID come back means the backend URL points at Muster itself.
 	ViaHeader = "X-Muster-Via"
@@ -63,6 +71,7 @@ type Gateway struct {
 	reg      *registry.Registry
 	auth     *peerauth.Auth
 	selfFP   string // fingerprint of the certificate this agent serves
+	benchMu  sync.Mutex
 	token    string
 	backend  string
 	client   *http.Client
@@ -135,6 +144,9 @@ func (g *Gateway) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, g.reg.Status())
 	})
 	mux.HandleFunc("GET "+ProbePath, g.handleProbe)
+	mux.HandleFunc("GET "+BenchPrefix+"/echo", g.handleBenchEcho)
+	mux.HandleFunc("GET "+BenchPrefix+"/download", g.handleBenchDownload)
+	mux.HandleFunc("POST "+BenchPrefix+"/device", g.handleBenchDevice)
 	mux.HandleFunc(ForwardPrefix+"/", g.handleForward)
 	mux.HandleFunc("GET /v1/models", g.handleOpenAIModels)
 	mux.HandleFunc("GET /api/tags", g.handleOllamaTags)
@@ -275,14 +287,92 @@ type ProbeResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// requireStrongAuth admits only cluster members (peer signature, already
+// verified by authenticate) or token holders. Loopback trust isn't enough
+// for endpoints that cost real work: any web page can make the browser GET
+// localhost.
+func (g *Gateway) requireStrongAuth(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get(peerauth.Header) != "" || g.hasToken(r) {
+		return true
+	}
+	writeError(w, r, http.StatusForbidden, "muster: this endpoint requires a peer signature or the cluster token")
+	return false
+}
+
+func (g *Gateway) handleBenchEcho(w http.ResponseWriter, r *http.Request) {
+	if g.requireStrongAuth(w, r) {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (g *Gateway) handleBenchDownload(w http.ResponseWriter, r *http.Request) {
+	if !g.requireStrongAuth(w, r) {
+		return
+	}
+	n, err := strconv.Atoi(r.URL.Query().Get("bytes"))
+	if err != nil || n < 1 || n > MaxBenchDownload {
+		writeError(w, r, http.StatusBadRequest, fmt.Sprintf("muster: bytes must be 1-%d", MaxBenchDownload))
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(n))
+	buf := make([]byte, 64<<10)
+	for n > 0 {
+		k := min(n, len(buf))
+		if _, err := w.Write(buf[:k]); err != nil {
+			return
+		}
+		n -= k
+	}
+}
+
+// handleBenchDevice runs this device's local benchmark. Only one runs at a
+// time; a second caller gets 409 rather than skewing both results.
+func (g *Gateway) handleBenchDevice(w http.ResponseWriter, r *http.Request) {
+	if !g.requireStrongAuth(w, r) {
+		return
+	}
+	if !g.benchMu.TryLock() {
+		writeError(w, r, http.StatusConflict, "muster: a benchmark is already running on this device")
+		return
+	}
+	defer g.benchMu.Unlock()
+	writeJSON(w, http.StatusOK, g.BenchDevice(r.Context(), r.URL.Query().Get("llm") != "0"))
+}
+
+// BenchDevice measures this device. withLLM also benchmarks its Ollama.
+func (g *Gateway) BenchDevice(ctx context.Context, withLLM bool) bench.Device {
+	self := g.reg.Self()
+	buf := 256 << 20
+	if self.MemoryBytes >= 8<<30 {
+		buf = 512 << 20
+	}
+	d := bench.Device{Name: self.Name, CPUs: self.CPUs, Load1: bench.Load1(), MemReadGBs: bench.MemRead(buf)}
+	if !withLLM {
+		return d
+	}
+	m, ok := bench.PickModel(self.Models)
+	switch {
+	case g.backend == "" || !self.BackendUp:
+		d.LLMError = "Ollama not reachable"
+	case !ok:
+		d.LLMError = "no generative model installed"
+	default:
+		res, err := bench.LLM(ctx, &http.Client{Timeout: 10 * time.Minute}, g.backend, m, 32)
+		if err != nil {
+			d.LLMError = err.Error()
+		} else {
+			d.LLM = &res
+		}
+	}
+	return d
+}
+
 // handleProbe dials back to the caller's own IP on ?port= and performs an
 // authenticated node fetch. The target host is always the request's source
 // address, never caller-supplied, so this cannot be aimed at third parties.
 func (g *Gateway) handleProbe(w http.ResponseWriter, r *http.Request) {
-	// Loopback trust isn't enough: any web page can make the browser GET
-	// localhost, and a probe makes this agent send signed requests.
-	if r.Header.Get(peerauth.Header) == "" && !g.hasToken(r) {
-		writeError(w, r, http.StatusForbidden, "muster: probe requires a peer signature or the cluster token")
+	if !g.requireStrongAuth(w, r) {
 		return
 	}
 	port, err := strconv.Atoi(r.URL.Query().Get("port"))

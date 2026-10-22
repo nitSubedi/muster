@@ -35,20 +35,23 @@ Sleep 3.5s
 Type "# qwen2.5:0.5b only exists on the Linux box. Ask for it from the laptop:"
 Enter
 Sleep 500ms
-Type `ollama run qwen2.5:0.5b "In one sentence, why use every computer you own for AI?"`
+Type `ollama run qwen2.5:0.5b "Name three planets in our solar system, comma separated."`
 Enter
-Sleep 9s
+Wait@90s /\$$/
+Sleep 1.5s
 
 Type "# Which machine answered? Muster tells you:"
 Enter
 Sleep 500ms
 Type `for m in qwen2.5:0.5b qwen2.5:7b; do curl -s -D- -o/dev/null localhost:7878/api/generate -d "{\"model\":\"$m\",\"prompt\":\"hi\",\"stream\":false,\"options\":{\"num_predict\":4}}" | grep Node; done`
 Enter
-Sleep 4s
+Wait@60s /\$$/
+Sleep 1.5s
 
 Type "# Health check, with the exact fix when something is wrong:"
 Enter
 Sleep 500ms
 Type "muster doctor"
 Enter
-Sleep 5s
+Wait@30s /\$$/
+Sleep 4s

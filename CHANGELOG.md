@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `muster bench`: measures each device's memory bandwidth, real LLM speed
+  (generation and prompt reading, through its own Ollama) and current load,
+  and each link's round-trip time (median / p90 / min) and throughput. It then
+  estimates when pooling helps: batch throughput, splitting a model layer by
+  layer, and long prompts as an assembly line. Busy devices are flagged.
+  Peers run their part over the authenticated TLS channel.
+
+### Removed
+- `docs/demo.gif`: an early broken recording; the final demo will replace it.
+
 ## v0.2.3 — 2026-10-22
 
 ### Fixed

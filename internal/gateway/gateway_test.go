@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -573,5 +574,66 @@ func TestBackendPointingAtSelfIsDetected(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("request looped instead of failing fast")
+	}
+}
+
+func authedGet(t *testing.T, url string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestBenchEndpointsRequireStrongAuth(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	for _, path := range []string{BenchPrefix + "/echo", BenchPrefix + "/download?bytes=10"} {
+		resp, _ := http.Get(lap.srv.URL + path) // loopback, no token
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s without token: %d, want 403", path, resp.StatusCode)
+		}
+	}
+	resp, _ := http.Post(lap.srv.URL+BenchPrefix+"/device?llm=0", "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("device bench without token: %d", resp.StatusCode)
+	}
+}
+
+func TestBenchDownloadSizeAndLimits(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	resp := authedGet(t, lap.srv.URL+BenchPrefix+"/download?bytes=100000")
+	n, _ := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if n != 100000 {
+		t.Fatalf("downloaded %d bytes", n)
+	}
+	for _, q := range []string{"0", "-1", "x", strconv.Itoa(MaxBenchDownload + 1)} {
+		resp := authedGet(t, lap.srv.URL+BenchPrefix+"/download?bytes="+q)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("bytes=%s: %d, want 400", q, resp.StatusCode)
+		}
+	}
+	resp = authedGet(t, lap.srv.URL+BenchPrefix+"/echo")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("echo: %d", resp.StatusCode)
+	}
+}
+
+func TestBenchDeviceWithoutLLM(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	d := lap.gw.BenchDevice(context.Background(), false)
+	if d.Name != "lap" || d.MemReadGBs <= 0 || d.LLM != nil {
+		t.Fatalf("got %+v", d)
+	}
+	d = lap.gw.BenchDevice(context.Background(), true) // no generative models
+	if d.LLMError == "" {
+		t.Fatalf("want an LLM error explaining why, got %+v", d)
 	}
 }

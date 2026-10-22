@@ -22,6 +22,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/nitSubedi/muster/internal/bench"
 	"github.com/nitSubedi/muster/internal/config"
 	"github.com/nitSubedi/muster/internal/discovery"
 	"github.com/nitSubedi/muster/internal/doctor"
@@ -46,6 +47,7 @@ Usage:
   muster token   [flags]   print this cluster's token
   muster join    [flags]   save a cluster token (paste it when prompted)
   muster doctor  [flags]   find out why a device isn't working, with fixes
+  muster bench   [flags]   measure devices and links; see when pooling helps
   muster service install [agent flags] | uninstall | status
                            run the agent at login (no sudo)
   muster version
@@ -70,6 +72,8 @@ func main() {
 		err = runJoin(args)
 	case "doctor":
 		err = runDoctor(args)
+	case "bench":
+		err = runBench(args)
 	case "service":
 		err = runService(args)
 	case "version", "--version", "-v":
@@ -350,6 +354,88 @@ func runJoin(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Joined cluster %s. Start (or restart) `muster agent`.\n", config.ClusterID(tok))
+	return nil
+}
+
+func runBench(args []string) error {
+	fs := flag.NewFlagSet("bench", flag.ExitOnError)
+	cfgPath := configFlag(fs)
+	addr := fs.String("addr", "http://127.0.0.1:7878", "local agent URL")
+	noLLM := fs.Bool("no-llm", false, "skip LLM measurements (memory and network only)")
+	asJSON := fs.Bool("json", false, "print raw JSON")
+	pings := fs.Int("pings", 30, "round trips per link")
+	mb := fs.Int("mb", 32, "MB to transfer per link for throughput")
+	fs.Parse(args)
+
+	cfg, _, err := config.LoadOrCreate(*cfgPath)
+	if err != nil {
+		return err
+	}
+	var rows []registry.PeerStatus
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(strings.TrimRight(*addr, "/") + gateway.ClusterPath)
+	if err != nil {
+		return fmt.Errorf("no agent at %s: start one with `muster agent`", *addr)
+	}
+	json.NewDecoder(resp.Body).Decode(&rows)
+	resp.Body.Close()
+	if len(rows) == 0 {
+		return fmt.Errorf("agent at %s returned no status", *addr)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	run := bench.Runner{
+		Client: registry.NewPeerClient(15 * time.Minute), Auth: peerauth.New(cfg.Token), Token: cfg.Token,
+		Pings: *pings, DownloadBytes: min(*mb<<20, bench.MaxDownload),
+	}
+	say := func(f string, a ...any) {
+		if !*asJSON {
+			fmt.Fprintf(os.Stderr, f+"\n", a...)
+		}
+	}
+	var report bench.Report
+	self := rows[0].Info.Name
+
+	say("Benchmarking %s (this device)…", self)
+	d, err := run.Local(ctx, strings.TrimRight(*addr, "/"), !*noLLM)
+	if err != nil {
+		return fmt.Errorf("local benchmark: %w", err)
+	}
+	report.Devices = append(report.Devices, d)
+
+	for _, p := range rows[1:] {
+		if !p.Healthy {
+			say("Skipping %s: %s", p.Addr, doctor.Diagnose(p.Addr, p.Error))
+			continue
+		}
+		peer := bench.Peer{Name: p.Info.Name, Addr: p.Addr}
+		say("Measuring the link to %s…", peer.Name)
+		rtt, err := run.RTT(ctx, peer)
+		if err != nil {
+			say("  round trips failed: %v", err)
+			continue
+		}
+		through, err := run.Throughput(ctx, peer)
+		if err != nil {
+			say("  throughput failed: %v", err)
+		}
+		report.Links = append(report.Links, bench.Link{From: self, To: peer.Name, RTT: rtt, ThroughMB: through})
+		say("Benchmarking %s…", peer.Name)
+		d, err := run.Remote(ctx, peer, !*noLLM)
+		if err != nil {
+			say("  device benchmark failed: %v", err)
+			continue
+		}
+		report.Devices = append(report.Devices, d)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+	fmt.Fprintln(os.Stderr)
+	report.Render(os.Stdout)
 	return nil
 }
 
