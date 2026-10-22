@@ -6,6 +6,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
 	"github.com/maauri/muster/internal/router"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 const (
@@ -55,6 +57,7 @@ var localOnly = map[string]bool{
 type Gateway struct {
 	reg      *registry.Registry
 	auth     *peerauth.Auth
+	selfFP   string // fingerprint of the certificate this agent serves
 	token    string
 	backend  string
 	client   *http.Client
@@ -62,9 +65,10 @@ type Gateway struct {
 }
 
 // New returns a gateway that routes over reg, accepts client requests
-// bearing token, signs peer traffic with auth, and serves locally via the
-// Ollama server at backendURL.
-func New(reg *registry.Registry, auth *peerauth.Auth, token, backendURL string) *Gateway {
+// bearing token, signs peer traffic with auth, proves responses with its
+// certificate fingerprint selfFP, and serves locally via the Ollama server
+// at backendURL.
+func New(reg *registry.Registry, auth *peerauth.Auth, selfFP, token, backendURL string) *Gateway {
 	// No overall timeout: generations legitimately run for minutes. Dead
 	// peers are detected by aggressive TCP keepalives instead (~25 s), which
 	// surfaces as a send error and triggers failover.
@@ -73,11 +77,40 @@ func New(reg *registry.Registry, auth *peerauth.Auth, token, backendURL string) 
 		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 10 * time.Second, Interval: 5 * time.Second, Count: 3},
 	}
 	client := registry.NewPeerClient(0)
-	client.Transport.(*http.Transport).DialContext = dialer.DialContext
-	client.Transport.(*http.Transport).MaxIdleConnsPerHost = 16
+	tr := client.Transport.(*http.Transport)
+	tr.DialContext = dialer.DialContext
+	tr.MaxIdleConnsPerHost = 16
+	// Prompts go only to the certificate the peer proved on its last poll,
+	// enforced in the handshake, before any request bytes are written.
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		pin := reg.Pin(addr)
+		if pin == "" {
+			return nil, fmt.Errorf("peer %s has no pinned certificate", addr)
+		}
+		raw, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		c := tls.Client(raw, &tls.Config{
+			InsecureSkipVerify: true, // verified against the pin below
+			MinVersion:         tls.VersionTLS13,
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if tlsid.PeerFP(&cs) != pin {
+					return errors.New("peer certificate does not match its pinned identity")
+				}
+				return nil
+			},
+		})
+		if err := c.HandshakeContext(ctx); err != nil {
+			raw.Close()
+			return nil, err
+		}
+		return c, nil
+	}
 	return &Gateway{
 		reg:     reg,
 		auth:    auth,
+		selfFP:  selfFP,
 		token:   token,
 		backend: strings.TrimRight(backendURL, "/"),
 		client:  client,
@@ -113,12 +146,16 @@ func (g *Gateway) Handler() http.Handler {
 func (g *Gateway) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(peerauth.Header) != "" {
+			if r.TLS == nil {
+				writeError(w, r, http.StatusBadRequest, "muster: agent traffic must use TLS")
+				return
+			}
 			nonce, ok := g.auth.Verify(r)
 			if !ok {
 				writeError(w, r, http.StatusUnauthorized, "muster: invalid peer signature (different cluster token, or clock skew over 60s)")
 				return
 			}
-			g.auth.Prove(w.Header(), nonce)
+			g.auth.Prove(w.Header(), nonce, g.selfFP)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -230,7 +267,7 @@ func (g *Gateway) handleProbe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	res := ProbeResult{Addr: addr, Reachable: true}
-	if _, err := g.reg.Fetch(ctx, addr); err != nil {
+	if _, _, err := g.reg.Fetch(ctx, addr); err != nil {
 		res.Reachable, res.Error = false, err.Error()
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -293,7 +330,7 @@ func retryable(code int, routed bool) bool {
 func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []byte) (*http.Response, error) {
 	target := g.backend + path
 	if !c.Local {
-		target = "http://" + c.Addr + ForwardPrefix + path
+		target = "https://" + c.Addr + ForwardPrefix + path
 	}
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
@@ -316,7 +353,7 @@ func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []
 	if err != nil {
 		return nil, err
 	}
-	if !g.auth.CheckProof(resp.Header, nonce) {
+	if !g.auth.CheckProof(resp.Header, nonce, tlsid.PeerFP(resp.TLS)) {
 		resp.Body.Close()
 		return nil, errors.New("peer failed authentication")
 	}

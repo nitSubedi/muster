@@ -26,11 +26,13 @@ import (
 	"github.com/maauri/muster/internal/discovery"
 	"github.com/maauri/muster/internal/doctor"
 	"github.com/maauri/muster/internal/gateway"
+	"github.com/maauri/muster/internal/muxlisten"
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/ollama"
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
 	"github.com/maauri/muster/internal/service"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -135,9 +137,13 @@ func runAgent(args []string) error {
 	backendURL := normalizeBackend(*backend)
 	cluster := config.ClusterID(cfg.Token)
 
+	id, err := tlsid.LoadOrCreate(filepath.Dir(*cfgPath))
+	if err != nil {
+		return fmt.Errorf("TLS identity: %w", err)
+	}
 	auth := peerauth.New(cfg.Token)
 	reg := registry.New(auth)
-	gw := gateway.New(reg, auth, cfg.Token, backendURL)
+	gw := gateway.New(reg, auth, id.FP, cfg.Token, backendURL)
 	for _, p := range peers {
 		reg.AddStatic(p)
 	}
@@ -185,8 +191,12 @@ func runAgent(args []string) error {
 		// Cancel in-flight requests (and their upstream calls) on Ctrl-C.
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
+	go func() { errc <- srv.Serve(muxlisten.New(ln, id.ServerConfig())) }()
 
 	slog.Info("muster agent running",
 		"node", *name, "listen", *listen, "cluster", cluster, "models", len(reg.Self().Models))

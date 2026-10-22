@@ -78,17 +78,23 @@ func TestMalformedHeaderRejected(t *testing.T) {
 func TestProof(t *testing.T) {
 	a, b := New("tok"), New("tok")
 	h := http.Header{}
-	b.Prove(h, "nonce-1")
-	if !a.CheckProof(h, "nonce-1") {
+	b.Prove(h, "nonce-1", "fp-real")
+	if !a.CheckProof(h, "nonce-1", "fp-real") {
 		t.Fatal("valid proof rejected")
 	}
-	if a.CheckProof(h, "nonce-2") {
+	if a.CheckProof(h, "nonce-2", "fp-real") {
 		t.Fatal("proof accepted for another nonce")
 	}
-	if New("other").CheckProof(h, "nonce-1") {
+	if a.CheckProof(h, "nonce-1", "fp-mitm") {
+		t.Fatal("proof accepted over a different certificate (MITM relay)")
+	}
+	if a.CheckProof(h, "nonce-1", "") {
+		t.Fatal("proof accepted over a plain connection")
+	}
+	if New("other").CheckProof(h, "nonce-1", "fp-real") {
 		t.Fatal("proof accepted by another cluster")
 	}
-	if a.CheckProof(http.Header{}, "nonce-1") {
+	if a.CheckProof(http.Header{}, "nonce-1", "fp-real") {
 		t.Fatal("missing proof accepted")
 	}
 }

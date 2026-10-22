@@ -13,6 +13,7 @@ import (
 
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/peerauth"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 // fakePeer serves node.Info and can be told to fail.
@@ -25,24 +26,25 @@ type fakePeer struct {
 func newFakePeer(t *testing.T, token string, info node.Info) *fakePeer {
 	f := &fakePeer{info: info}
 	auth := peerauth.New(token)
-	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nonce, ok := auth.Verify(r)
 		if !ok {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		auth.Prove(w.Header(), nonce)
+		auth.Prove(w.Header(), nonce, tlsid.Fingerprint(f.srv.Certificate().Raw))
 		if f.fail.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
 		}
 		json.NewEncoder(w).Encode(f.info)
 	}))
+	f.srv.StartTLS()
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
-func (f *fakePeer) addr() string { return strings.TrimPrefix(f.srv.URL, "http://") }
+func (f *fakePeer) addr() string { return strings.TrimPrefix(f.srv.URL, "https://") }
 
 func newReg(token string) *Registry { return New(peerauth.New(token)) }
 
@@ -182,7 +184,7 @@ func TestBeginTracksPending(t *testing.T) {
 // if it answers with an attractive node.Info.
 func TestImpostorPeerNeverTrusted(t *testing.T) {
 	var sawSecret atomic.Bool
-	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, vs := range r.Header {
 			for _, v := range vs {
 				if strings.Contains(v, "SECRET") {
@@ -195,7 +197,7 @@ func TestImpostorPeerNeverTrusted(t *testing.T) {
 	defer evil.Close()
 
 	r := newReg("SECRET-TOKEN")
-	r.Observe(strings.TrimPrefix(evil.URL, "http://"))
+	r.Observe(strings.TrimPrefix(evil.URL, "https://"))
 	r.PollOnce(context.Background())
 	if sawSecret.Load() {
 		t.Fatal("token sent to unauthenticated peer")
@@ -207,13 +209,13 @@ func TestImpostorPeerNeverTrusted(t *testing.T) {
 
 func TestRedirectNotFollowed(t *testing.T) {
 	var hit atomic.Bool
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit.Store(true) }))
+	other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit.Store(true) }))
 	defer other.Close()
-	redir := httptest.NewServer(http.RedirectHandler(other.URL, http.StatusTemporaryRedirect))
+	redir := httptest.NewTLSServer(http.RedirectHandler(other.URL, http.StatusTemporaryRedirect))
 	defer redir.Close()
 
 	r := newReg("tok")
-	r.AddStatic(strings.TrimPrefix(redir.URL, "http://"))
+	r.AddStatic(strings.TrimPrefix(redir.URL, "https://"))
 	r.PollOnce(context.Background())
 	if hit.Load() {
 		t.Fatal("peer redirect was followed")
@@ -240,5 +242,18 @@ func TestProvenPeerNotEvictedByFlood(t *testing.T) {
 	}
 	if len(r.Candidates()) != 1 {
 		t.Fatal("proven peer was evicted by a beacon flood")
+	}
+}
+
+func TestPinSetByProvedPoll(t *testing.T) {
+	p := newFakePeer(t, "tok", peerInfo("desk"))
+	r := newReg("tok")
+	r.AddStatic(p.addr())
+	if r.Pin(p.addr()) != "" {
+		t.Fatal("pinned before proving")
+	}
+	r.PollOnce(context.Background())
+	if got, want := r.Pin(p.addr()), tlsid.Fingerprint(p.srv.Certificate().Raw); got != want {
+		t.Fatalf("pin = %q, want %q", got, want)
 	}
 }

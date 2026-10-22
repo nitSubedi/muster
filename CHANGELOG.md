@@ -20,6 +20,11 @@
 - Release workflow: tagging `v*` runs tests, builds every platform, publishes
   a GitHub Release, and renders the Homebrew formula
   (`packaging/homebrew/render.sh`).
+- **TLS 1.3 between agents** (ADR-0005): per-node certificates, response
+  proofs bound to the server certificate, forwards pinned in the handshake
+  before any prompt bytes are sent, and peer requests over plain HTTP refused.
+  Local apps keep plain HTTP on the same port. Tested against an active MITM
+  relay (never trusted, never sent a prompt) and verified on the LAN.
 - `muster status` names the peer's actual port in unreachable diagnoses.
 
 ## Unreleased — v0.1.0

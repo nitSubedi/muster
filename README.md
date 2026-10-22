@@ -163,9 +163,13 @@ to. Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   macOS, `~/.config/muster/` on Linux, `%AppData%\muster\` on Windows, where
   it inherits your profile's ACL). It is never broadcast. `muster join` reads
   it from stdin so it stays out of shell history.
-- **Known limitation (v0.1):** traffic between agents is plain HTTP. Anyone
-  who can sniff your LAN can read prompts in transit between your devices.
-  Tailscale encrypts this for you. Native TLS is planned for v0.2.
+- Traffic between agents is **TLS 1.3**. Each device has its own certificate,
+  pinned via the cluster key, so there's no certificate authority to set up and
+  no man-in-the-middle window ([ADR-0005](docs/adr/0005-tls-between-agents-cluster-bound-pins.md)).
+  Local apps keep using plain `http://localhost:7878` on the same port.
+- Apps on *other* devices that call Muster over plain `http://` send the
+  token unencrypted. Prefer Tailscale for those, or `https://` with
+  certificate pinning.
 
 ## Flags
 
@@ -193,6 +197,5 @@ make dist     # binaries for every platform in ./dist
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: TLS between agents,
-`brew install`, run-at-login service, and more backends (LM Studio,
-llama.cpp server, vLLM).
+See [docs/ROADMAP.md](docs/ROADMAP.md). Next up: throughput-aware routing
+(field test F7) and more backends (LM Studio, llama.cpp server, vLLM).

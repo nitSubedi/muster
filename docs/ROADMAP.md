@@ -9,7 +9,7 @@ Discovery, routing, failover, OpenAI + Ollama APIs, token auth, `status`.
 ## v0.2 — "I'd leave it running" (adoption)
 - [x] **Install in one line**: `curl | sh` with checksum verification, Homebrew formula, GitHub Releases via CI (go live once the repo is public). Scoop for Windows: still to do.
 - [x] **Run at login**: `muster service install` (launchd / systemd user units). Windows Task Scheduler: still to do.
-- [ ] **TLS between agents**: per-node self-signed certificates, pinned on first contact by cluster token (closes the README's known limitation).
+- [x] **TLS between agents**: per-node certificates, proofs bound to the certificate, pinned forwards (ADR-0005).
 - [ ] **Live load reporting**: push in-flight changes to peers on change, not just on 2 s polls, so request bursts spread immediately.
 - [x] **`muster doctor`**: checks firewall, Ollama binding, discovery reachability, and token mismatch, and prints the fix. Top priority after field test F1/F2: firewalld blocks Muster on every RHEL-family distro.
 - [x] **Reachability reports**: done as doctor's peer probe (field test F3).

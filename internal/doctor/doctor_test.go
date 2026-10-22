@@ -13,9 +13,11 @@ import (
 	"testing"
 
 	"github.com/maauri/muster/internal/gateway"
+	"github.com/maauri/muster/internal/muxlisten"
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 const token = "doctor-test-token"
@@ -29,7 +31,13 @@ type agent struct {
 func newAgent(t *testing.T, name string) *agent {
 	auth := peerauth.New(token)
 	reg := registry.New(auth)
-	srv := httptest.NewServer(gateway.New(reg, auth, token, "").Handler())
+	id, err := tlsid.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(gateway.New(reg, auth, id.FP, token, "").Handler())
+	srv.Listener = muxlisten.New(srv.Listener, id.ServerConfig())
+	srv.Start()
 	t.Cleanup(srv.Close)
 	_, p, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
 	port, _ := strconv.Atoi(p)

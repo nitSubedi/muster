@@ -112,5 +112,7 @@ Only cluster-authenticated callers can probe. A peer that is healthy but has
   with mode 0600 on first run. Compared in constant time.
 - Agents never send the token to each other; they sign requests and prove
   responses with an HMAC key derived from it (ADR-0004).
-- Traffic between agents is plain HTTP in v0.1, so prompts are readable by a
-  LAN sniffer. Over Tailscale it is already encrypted; LAN TLS is v0.2.
+- Agent traffic is TLS 1.3 on the same port as local plain HTTP (first-byte
+  sniffing, `internal/muxlisten`). Proofs are bound to the server certificate
+  fingerprint, and forwards only complete a handshake with the certificate
+  pinned by the last proved poll (ADR-0005).

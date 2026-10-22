@@ -22,6 +22,7 @@ import (
 	"github.com/maauri/muster/internal/gateway"
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 // Status of one check.
@@ -189,7 +190,7 @@ func checkInbound(ctx context.Context, env Env, rows []registry.PeerStatus) Resu
 		}
 		asked++
 		var res gateway.ProbeResult
-		target := "http://" + p.Addr + gateway.ProbePath + "?port=" + strconv.Itoa(self.Port)
+		target := "https://" + p.Addr + gateway.ProbePath + "?port=" + strconv.Itoa(self.Port)
 		if err := getJSON(ctx, env.Client, target, env.Auth, &res); err != nil {
 			blocked = append(blocked, peerName(p)+" (probe failed: "+Diagnose(p.Addr, err.Error())+")")
 		} else if res.Reachable {
@@ -300,7 +301,7 @@ func getJSON(ctx context.Context, c *http.Client, target string, auth *peerauth.
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s", resp.Status)
 	}
-	if auth != nil && !auth.CheckProof(resp.Header, nonce) {
+	if auth != nil && !auth.CheckProof(resp.Header, nonce, tlsid.PeerFP(resp.TLS)) {
 		return fmt.Errorf("peer failed authentication")
 	}
 	return json.NewDecoder(resp.Body).Decode(v)

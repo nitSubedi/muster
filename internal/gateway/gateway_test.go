@@ -3,18 +3,24 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/maauri/muster/internal/muxlisten"
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/registry"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 const token = "test-token"
@@ -50,8 +56,14 @@ func newNode(t *testing.T, id string, backendURL string, models ...node.Model) *
 	auth := peerauth.New(token)
 	reg := registry.New(auth)
 	reg.SetSelf(node.Info{ID: id, Name: id, BackendUp: backendURL != "", Models: models})
-	gw := New(reg, auth, token, backendURL)
-	srv := httptest.NewServer(gw.Handler())
+	ident, err := tlsid.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := New(reg, auth, ident.FP, token, backendURL)
+	srv := httptest.NewUnstartedServer(gw.Handler())
+	srv.Listener = muxlisten.New(srv.Listener, ident.ServerConfig())
+	srv.Start()
 	t.Cleanup(srv.Close)
 	return &testNode{gw: gw, srv: srv, reg: reg}
 }
@@ -250,7 +262,7 @@ func TestAuth(t *testing.T) {
 		{"lan without token", "192.168.1.9:5000", "192.168.1.2:7878", nil, 401},
 		{"lan with wrong token", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{"Authorization": "Bearer nope"}, 401},
 		{"lan with bearer token", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{"Authorization": "Bearer " + token}, 200},
-		{"lan with forged peer signature", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{peerauth.Header: "v1 1 n sig"}, 401},
+		{"peer signature over plain http", "192.168.1.9:5000", "192.168.1.2:7878", map[string]string{peerauth.Header: "v1 1 n sig"}, 400},
 		{"dns rebinding", "127.0.0.1:5000", "evil.example:7878", nil, 401},
 		{"cross-site browser", "127.0.0.1:5000", "localhost:7878", map[string]string{"Origin": "https://evil.example"}, 401},
 		{"local web app", "127.0.0.1:5000", "localhost:7878", map[string]string{"Origin": "http://localhost:3000"}, 200},
@@ -316,12 +328,60 @@ func TestPeerSignatureAcceptedAndProved(t *testing.T) {
 	lap := newNode(t, "lap", fakeOllama(t, "l").URL, model("llama3", false))
 	r := httptest.NewRequest(http.MethodGet, registry.NodePath, nil)
 	r.RemoteAddr, r.Host = "192.168.1.9:5000", "192.168.1.2:7878"
+	r.TLS = &tls.ConnectionState{}
 	other := peerauth.New(token)
 	nonce := other.Sign(r)
 	w := httptest.NewRecorder()
 	lap.gw.Handler().ServeHTTP(w, r)
-	if w.Code != 200 || !other.CheckProof(w.Header(), nonce) {
+	if w.Code != 200 || !other.CheckProof(w.Header(), nonce, lap.gw.selfFP) {
 		t.Fatalf("status=%d proof=%q", w.Code, w.Header().Get(peerauth.ProofHeader))
+	}
+}
+
+func TestPeerRequestOverPlainHTTPRejected(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	req, _ := http.NewRequest(http.MethodGet, lap.srv.URL+registry.NodePath, nil)
+	peerauth.New(token).Sign(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// A man-in-the-middle terminates TLS with its own certificate and relays
+// everything to the real node. The real node's proofs are bound to the real
+// certificate, so the relay can never be trusted and never sees a prompt.
+func TestMITMRelayNeverTrustedOrSentPrompts(t *testing.T) {
+	desk := newNode(t, "desk", fakeOllama(t, "desk-ollama").URL, model("llama3", true))
+	lap := newNode(t, "lap", fakeOllama(t, "lap-ollama").URL, model("llama3", false))
+
+	var relayedPOST atomic.Bool
+	upstream, _ := url.Parse("https://" + desk.addr())
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	proxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	mitmID, _ := tlsid.LoadOrCreate(t.TempDir())
+	mitm := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			relayedPOST.Store(true)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	mitm.Listener = muxlisten.New(mitm.Listener, mitmID.ServerConfig())
+	mitm.Start()
+	defer mitm.Close()
+
+	lap.reg.AddStatic(strings.TrimPrefix(mitm.URL, "http://"))
+	lap.reg.PollOnce(context.Background())
+	if n := len(lap.reg.Candidates()); n != 1 {
+		t.Fatalf("relay became a candidate (%d candidates)", n)
+	}
+	_, out := post(t, lap.srv.URL+"/api/chat", `{"model":"llama3","messages":[{"content":"secret plans"}]}`)
+	if out["served_by"] != "lap-ollama" || relayedPOST.Load() {
+		t.Fatalf("out=%v relayedPOST=%v", out, relayedPOST.Load())
 	}
 }
 
@@ -410,5 +470,17 @@ func TestProbeRejectsBadPortAndAnonymousLAN(t *testing.T) {
 	desk.gw.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous LAN probe status = %d", w.Code)
+	}
+}
+
+func TestForgedPeerSignatureOverTLSRejected(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	r := httptest.NewRequest(http.MethodGet, registry.NodePath, nil)
+	r.RemoteAddr, r.Host, r.TLS = "192.168.1.9:5000", "192.168.1.2:7878", &tls.ConnectionState{}
+	r.Header.Set(peerauth.Header, "v1 1 n sig")
+	w := httptest.NewRecorder()
+	lap.gw.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized || w.Header().Get(peerauth.ProofHeader) != "" {
+		t.Fatalf("status=%d proof=%q", w.Code, w.Header().Get(peerauth.ProofHeader))
 	}
 }

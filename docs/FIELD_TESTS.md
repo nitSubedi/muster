@@ -66,3 +66,12 @@ Doctor found it via the peer probe and printed the exact fix with the right
 port. This closes F1–F3 from the user's point of view. The run also caught a
 hard-coded "7878" in the peer diagnosis on the Mac side; it now uses the
 peer's real port.
+
+### Round 5: TLS between agents, live (2026-10-22)
+
+| Check | Result |
+|---|---|
+| Mac → Rocky-only model over TLS forward | ✅ `X-Muster-Node: rocky` |
+| Rocky → Mac model over TLS forward | ✅ `X-Muster-Node: macbook` |
+| `openssl s_client` to Rocky:7878 | ✅ TLSv1.3, TLS_AES_128_GCM_SHA256; cert on the wire = Rocky's `node.crt` (SHA-256 match) |
+| Signed peer request over plain HTTP | ✅ refused: "agent traffic must use TLS" |

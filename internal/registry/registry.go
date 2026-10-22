@@ -4,6 +4,7 @@ package registry
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/peerauth"
 	"github.com/maauri/muster/internal/router"
+	"github.com/maauri/muster/internal/tlsid"
 )
 
 const (
@@ -35,12 +37,14 @@ const (
 
 // NewPeerClient returns the HTTP client for agent-to-agent traffic. It never
 // uses an environment proxy and never follows redirects, so requests only
-// ever reach the peer they were addressed to.
+// ever reach the peer they were addressed to. TLS certificates are not
+// CA-verified: the caller must check the channel-bound proof (ADR-0005).
 func NewPeerClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
 			DialContext:         (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13},
 			MaxIdleConnsPerHost: 4,
 			IdleConnTimeout:     90 * time.Second,
 		},
@@ -52,6 +56,7 @@ type peer struct {
 	addr       string
 	static     bool
 	info       node.Info
+	fp         string // pinned certificate fingerprint, set by a proved poll
 	polled     bool
 	failures   int
 	lastBeacon time.Time
@@ -164,8 +169,8 @@ func (r *Registry) PollOnce(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			info, err := r.Fetch(ctx, addr)
-			r.record(addr, info, err)
+			info, fp, err := r.Fetch(ctx, addr)
+			r.record(addr, info, fp, err)
 		}()
 	}
 	wg.Wait()
@@ -189,36 +194,50 @@ func (r *Registry) Run(ctx context.Context, interval time.Duration, refreshSelf 
 	}
 }
 
-// Fetch retrieves node.Info from the agent at addr, requiring it to prove it
-// holds the cluster key.
-func (r *Registry) Fetch(ctx context.Context, addr string) (node.Info, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+NodePath, nil)
+// Fetch retrieves node.Info from the agent at addr over TLS, requiring a
+// proof bound to the certificate it presented. It returns that
+// certificate's fingerprint for pinning.
+func (r *Registry) Fetch(ctx context.Context, addr string) (node.Info, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+NodePath, nil)
 	if err != nil {
-		return node.Info{}, err
+		return node.Info{}, "", err
 	}
 	nonce := r.auth.Sign(req)
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return node.Info{}, err
+		return node.Info{}, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return node.Info{}, fmt.Errorf("%s", resp.Status)
+		return node.Info{}, "", fmt.Errorf("%s", resp.Status)
 	}
-	if !r.auth.CheckProof(resp.Header, nonce) {
-		return node.Info{}, errors.New("peer failed authentication (different cluster token?)")
+	fp := tlsid.PeerFP(resp.TLS)
+	if !r.auth.CheckProof(resp.Header, nonce, fp) {
+		return node.Info{}, "", errors.New("peer failed authentication (different cluster token?)")
 	}
 	var info node.Info
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxInfoBytes)).Decode(&info); err != nil {
-		return node.Info{}, err
+		return node.Info{}, "", err
 	}
 	if info.ID == "" {
-		return node.Info{}, fmt.Errorf("peer returned no node id")
+		return node.Info{}, "", fmt.Errorf("peer returned no node id")
 	}
-	return info, nil
+	return info, fp, nil
 }
 
-func (r *Registry) record(addr string, info node.Info, err error) {
+// Pin returns the certificate fingerprint proved by the peer at addr, or ""
+// if it has never proved itself. Forwarded prompts are only sent over TLS
+// connections presenting this certificate.
+func (r *Registry) Pin(addr string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.peers[addr]; ok && p.polled {
+		return p.fp
+	}
+	return ""
+}
+
+func (r *Registry) record(addr string, info node.Info, fp string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.peers[addr]
@@ -230,7 +249,7 @@ func (r *Registry) record(addr string, info node.Info, err error) {
 		p.lastErr = err.Error()
 		return
 	}
-	p.info, p.polled, p.failures, p.lastErr = info, true, 0, ""
+	p.info, p.fp, p.polled, p.failures, p.lastErr = info, fp, true, 0, ""
 }
 
 func (p *peer) healthy() bool { return p.polled && p.failures < UnhealthyAfter }

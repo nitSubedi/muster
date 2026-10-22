@@ -5,12 +5,13 @@
 //
 //	X-Muster-Auth: v1 <unix-ts> <nonce> <base64 HMAC(key, "req" ts nonce method uri)>
 //
-// and the callee answers with proof that it also holds the key:
+// and the callee answers with proof that it also holds the key, bound to
+// the TLS certificate it served the response with (ADR-0005):
 //
-//	X-Muster-Proof: <base64 HMAC(key, "resp" nonce)>
+//	X-Muster-Proof: <base64 HMAC(key, "resp" nonce cert-fingerprint)>
 //
-// Callers only trust a peer, and only send it prompts, after it has proved
-// itself, so an attacker who copies a beacon learns nothing and gets nothing.
+// The caller checks the proof against the fingerprint of the certificate
+// it actually saw, so a man-in-the-middle's proof relay never verifies.
 package peerauth
 
 import (
@@ -94,15 +95,17 @@ func (a *Auth) Verify(r *http.Request) (nonce string, ok bool) {
 	return nonce, true
 }
 
-// Prove sets the response proof for nonce on h.
-func (a *Auth) Prove(h http.Header, nonce string) {
-	h.Set(ProofHeader, a.mac("resp", nonce))
+// Prove sets the response proof for nonce on h, bound to certFP, the
+// fingerprint of the certificate this server presents.
+func (a *Auth) Prove(h http.Header, nonce, certFP string) {
+	h.Set(ProofHeader, a.mac("resp", nonce, certFP))
 }
 
-// CheckProof reports whether h carries a valid proof for nonce.
-func (a *Auth) CheckProof(h http.Header, nonce string) bool {
+// CheckProof reports whether h carries a valid proof for nonce, made by a
+// server presenting the certificate with fingerprint certFP.
+func (a *Auth) CheckProof(h http.Header, nonce, certFP string) bool {
 	got := h.Get(ProofHeader)
-	return got != "" && hmac.Equal([]byte(got), []byte(a.mac("resp", nonce)))
+	return got != "" && certFP != "" && hmac.Equal([]byte(got), []byte(a.mac("resp", nonce, certFP)))
 }
 
 func (a *Auth) mac(parts ...string) string {
