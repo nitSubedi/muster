@@ -14,6 +14,12 @@
   launchd agent (macOS) or `systemd --user` unit (Linux), with no sudo and
   automatic restart on crash. Verified on Rocky 9.6 (install, kill -9 →
   restart in ~5 s, uninstall).
+- `install.sh` (`curl | sh`): picks the right binary, verifies SHA-256
+  against `SHA256SUMS`, and refuses tampered downloads; no sudo needed.
+  Verified on macOS arm64 and Rocky Linux x86_64.
+- Release workflow: tagging `v*` runs tests, builds every platform, publishes
+  a GitHub Release, and renders the Homebrew formula
+  (`packaging/homebrew/render.sh`).
 - `muster status` names the peer's actual port in unreachable diagnoses.
 
 ## Unreleased — v0.1.0

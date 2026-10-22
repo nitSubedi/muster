@@ -28,6 +28,17 @@ desktop  192.168.1.20:7878  ready  linux/amd64 16cpu 64GB +RTX 4090   1     qwen
   cross-site and DNS-rebinding attacks.
 - **One binary, no dependencies.** macOS, Linux and Windows on ARM and x86.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maauri/muster/main/install.sh | sh
+# or: brew install maauri/tap/muster
+```
+
+The installer verifies the binary's SHA-256 against the release checksums
+and installs to `/usr/local/bin`, or to `~/.local/bin` without sudo.
+Windows: download `muster-windows-amd64.exe` from Releases.
+
 ## Quick start
 
 You need [Ollama](https://ollama.com) installed on each machine that should

@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+      - run: make vet dist VERSION=${{ github.ref_name }}
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "Muster ${{ github.ref_name }}" \
+            --notes "Install: \`curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh\`. See CHANGELOG.md for what's new." \
+            --verify-tag
+      - name: Render Homebrew formula
+        run: ./packaging/homebrew/render.sh "${{ github.ref_name }}" dist/SHA256SUMS > muster.rb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: muster.rb
