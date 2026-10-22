@@ -2,11 +2,16 @@
 // the local one.
 package node
 
+import "encoding/json"
+
 // Model is one model available on a node's inference backend.
 type Model struct {
 	Name   string `json:"name"`
 	Size   int64  `json:"size"`
 	Loaded bool   `json:"loaded"`
+	// Tag is the backend's own /api/tags entry, passed through unchanged
+	// so clients like `ollama list` see every field they expect.
+	Tag json.RawMessage `json:"tag,omitempty"`
 }
 
 // GPU is a discrete accelerator. Apple Silicon reports none; its unified

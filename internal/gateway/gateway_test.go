@@ -519,3 +519,33 @@ func TestErrorMessagesNotHTMLEscaped(t *testing.T) {
 		t.Fatalf("body = %s", w.Body)
 	}
 }
+
+// `ollama list` panics unless every entry has a digest of 12+ characters,
+// so /api/tags must pass the backend's entries through intact.
+func TestTagsCompatibleWithOllamaCLI(t *testing.T) {
+	tag := json.RawMessage(`{"name":"llama3:latest","model":"llama3:latest","modified_at":"2026-01-01T00:00:00Z","size":4,"digest":"0123456789abcdef0123","details":{"family":"llama"}}`)
+	desk := newNode(t, "desk", fakeOllama(t, "d").URL, node.Model{Name: "llama3:latest", Tag: tag})
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL, model("qwen2.5:7b", false)) // no Tag: synthesized
+	lap.peerWith(t, desk)
+
+	resp, _ := http.Get(lap.srv.URL + "/api/tags")
+	var out struct {
+		Models []map[string]any `json:"models"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if len(out.Models) != 2 {
+		t.Fatalf("models = %v", out.Models)
+	}
+	for _, m := range out.Models {
+		if d, _ := m["digest"].(string); len(d) < 12 {
+			t.Errorf("%v: digest %q too short for ollama list", m["name"], d)
+		}
+		if _, ok := m["modified_at"]; !ok {
+			t.Errorf("%v: missing modified_at", m["name"])
+		}
+	}
+	if d, _ := out.Models[0]["details"].(map[string]any); d["family"] != "llama" {
+		t.Errorf("backend entry not passed through: %v", out.Models[0])
+	}
+}

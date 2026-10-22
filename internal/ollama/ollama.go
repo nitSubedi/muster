@@ -24,10 +24,7 @@ func New(baseURL string) *Client {
 }
 
 type tagsResponse struct {
-	Models []struct {
-		Name string `json:"name"`
-		Size int64  `json:"size"`
-	} `json:"models"`
+	Models []json.RawMessage `json:"models"`
 }
 
 type psResponse struct {
@@ -51,11 +48,19 @@ func (c *Client) Models(ctx context.Context) ([]node.Model, error) {
 		loaded[node.NormalizeModel(m.Name)] = true
 	}
 	out := make([]node.Model, 0, len(tags.Models))
-	for _, m := range tags.Models {
+	for _, raw := range tags.Models {
+		var m struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		}
+		if json.Unmarshal(raw, &m) != nil || m.Name == "" {
+			continue
+		}
 		out = append(out, node.Model{
 			Name:   m.Name,
 			Size:   m.Size,
 			Loaded: loaded[node.NormalizeModel(m.Name)],
+			Tag:    raw,
 		})
 	}
 	return out, nil

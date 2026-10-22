@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.1 — 2026-10-22
+
+### Fixed
+- `ollama list` against Muster crashed (the Ollama CLI requires each model's
+  `digest`). `/api/tags` now passes every node's real Ollama entries through
+  intact (digest, modified_at, details, capabilities).
+- Homebrew formula rendering no longer executes backticked text in the
+  caveats.
+
 ## v0.2.0 — 2026-10-22
 
 ### Added

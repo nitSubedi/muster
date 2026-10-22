@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -24,7 +25,7 @@ func TestModelsMarksLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !got[0].Loaded || got[1].Loaded || got[1].Size != 5 {
+	if len(got) != 2 || !got[0].Loaded || got[1].Loaded || got[1].Size != 5 || !strings.Contains(string(got[0].Tag), `"size":4`) {
 		t.Fatalf("got %+v", got)
 	}
 }

@@ -6,7 +6,9 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -435,21 +437,34 @@ func (g *Gateway) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
+// handleOllamaTags merges every node's /api/tags. Entries are the backend's
+// own JSON, so `ollama list` and other clients get digest, details, etc.
 func (g *Gateway) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
-	type model struct {
-		Name  string `json:"name"`
-		Model string `json:"model"`
-		Size  int64  `json:"size"`
-	}
-	sizes := map[string]int64{}
+	entries := map[string]json.RawMessage{}
 	for _, c := range g.reg.Candidates() {
 		for _, m := range c.Info.Models {
-			sizes[node.NormalizeModel(m.Name)] = m.Size
+			n := node.NormalizeModel(m.Name)
+			if _, seen := entries[n]; seen {
+				continue
+			}
+			if len(m.Tag) > 0 {
+				entries[n] = m.Tag
+				continue
+			}
+			// Synthesized entry: the Ollama CLI slices digest[:12], so it
+			// must never be short.
+			sum := sha256.Sum256([]byte(n))
+			b, _ := json.Marshal(map[string]any{
+				"name": n, "model": n, "size": m.Size,
+				"digest": hex.EncodeToString(sum[:]), "modified_at": time.Time{}.Format(time.RFC3339),
+				"details": map[string]any{},
+			})
+			entries[n] = b
 		}
 	}
-	models := []model{}
+	models := []json.RawMessage{}
 	for _, n := range g.modelNames() {
-		models = append(models, model{Name: n, Model: n, Size: sizes[n]})
+		models = append(models, entries[n])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
