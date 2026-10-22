@@ -27,6 +27,27 @@
   relay (never trusted, never sent a prompt) and verified on the LAN.
 - `muster status` names the peer's actual port in unreachable diagnoses.
 
+### Fixed (second pre-release security review)
+- **DoS:** one temporary `accept` error (e.g. too many open files) left the
+  listener dead while the process looked healthy. It now retries with
+  backoff, and silent pre-TLS connections are capped at 256 with a 3 s sniff
+  deadline.
+- `/muster/v1/probe` now requires a peer signature or the token. Loopback
+  trust alone let any web page trigger signed requests to local ports.
+- `muster service install` rejects arguments containing control characters
+  (newline injection into the systemd unit), retries launchd bootstrap after
+  bootout, and records the stable Homebrew `bin/` path instead of the
+  versioned Cellar path that `brew cleanup` deletes.
+- Node certificate and key now live in one atomically created `node.pem`, so
+  concurrent first runs can't produce a mismatched pair.
+- Peer URLs escape IPv6 zones (link-local probes no longer misreport a firewall).
+- Release workflow: tag passed via env and validated (no script injection);
+  only the publish job has write permission.
+- `install.sh` runs entirely inside `main()` (safe against truncated
+  `curl | sh`), stages on the install filesystem for an atomic replace, and
+  restarts a running service after an upgrade.
+- Homebrew formula no longer defines a competing `brew services` unit.
+
 ## Unreleased — v0.1.0
 
 ### Added

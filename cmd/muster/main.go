@@ -396,15 +396,9 @@ func runService(args []string) error {
 	}
 	switch args[0] {
 	case "install":
-		exe, err := os.Executable()
+		exe, err := serviceExe()
 		if err != nil {
 			return err
-		}
-		if exe, err = filepath.EvalSymlinks(exe); err != nil {
-			return err
-		}
-		if strings.HasPrefix(exe, os.TempDir()) || strings.Contains(exe, "/go-build") {
-			return fmt.Errorf("%s is a temporary binary; install muster somewhere permanent first", exe)
 		}
 		agentArgs := args[1:]
 		// Services don't inherit the shell environment, so capture it now.
@@ -435,6 +429,34 @@ func runService(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown service command %q", args[0])
+}
+
+// serviceExe is the path the service should run. It must survive upgrades:
+// a Homebrew Cellar path is versioned and deleted by `brew cleanup`, so we
+// use the stable <prefix>/bin symlink instead.
+func serviceExe() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	tmp, _ := filepath.EvalSymlinks(os.TempDir())
+	if strings.HasPrefix(resolved, tmp) || strings.HasPrefix(exe, os.TempDir()) || strings.Contains(resolved, "/go-build") {
+		return "", fmt.Errorf("%s is a temporary binary; install muster somewhere permanent first", exe)
+	}
+	return stablePath(exe, resolved), nil
+}
+
+func stablePath(exe, resolved string) string {
+	for _, p := range []string{exe, resolved} {
+		if prefix, _, ok := strings.Cut(p, "/Cellar/"); ok {
+			return prefix + "/bin/muster"
+		}
+	}
+	return exe
 }
 
 func hasFlag(args []string, name string) bool {

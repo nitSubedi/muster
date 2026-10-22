@@ -21,7 +21,7 @@ func TestLoadOrCreateIsStable(t *testing.T) {
 		t.Fatalf("fingerprints %q %q", a.FP, b.FP)
 	}
 	if runtime.GOOS != "windows" {
-		st, _ := os.Stat(filepath.Join(dir, "node.key"))
+		st, _ := os.Stat(filepath.Join(dir, "node.pem"))
 		if st.Mode().Perm() != 0o600 {
 			t.Fatalf("key mode %v", st.Mode().Perm())
 		}
@@ -35,5 +35,25 @@ func TestLoadOrCreateIsStable(t *testing.T) {
 func TestPeerFPPlain(t *testing.T) {
 	if PeerFP(nil) != "" {
 		t.Fatal("plain connection has a fingerprint")
+	}
+}
+
+func TestConcurrentFirstRunAgree(t *testing.T) {
+	dir := t.TempDir()
+	fps := make(chan string, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			id, err := LoadOrCreate(dir)
+			if err != nil {
+				t.Error(err)
+			}
+			fps <- id.FP
+		}()
+	}
+	first := <-fps
+	for i := 1; i < 8; i++ {
+		if fp := <-fps; fp != first {
+			t.Fatalf("concurrent first runs produced different identities")
+		}
 	}
 }

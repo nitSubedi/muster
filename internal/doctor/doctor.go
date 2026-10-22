@@ -190,7 +190,7 @@ func checkInbound(ctx context.Context, env Env, rows []registry.PeerStatus) Resu
 		}
 		asked++
 		var res gateway.ProbeResult
-		target := "https://" + p.Addr + gateway.ProbePath + "?port=" + strconv.Itoa(self.Port)
+		target := registry.PeerURL(p.Addr, gateway.ProbePath, "port="+strconv.Itoa(self.Port))
 		if err := getJSON(ctx, env.Client, target, env.Auth, &res); err != nil {
 			blocked = append(blocked, peerName(p)+" (probe failed: "+Diagnose(p.Addr, err.Error())+")")
 		} else if res.Reachable {

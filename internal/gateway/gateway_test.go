@@ -436,11 +436,17 @@ func TestProbeDialsBackToCaller(t *testing.T) {
 	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
 	_, port, _ := strings.Cut(lap.addr(), ":")
 
-	// desk probes back to the caller (127.0.0.1 here) on lap's port.
-	resp, err := http.Get(desk.srv.URL + ProbePath + "?port=" + port)
-	if err != nil {
-		t.Fatal(err)
+	probe := func() *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, desk.srv.URL+ProbePath+"?port="+port, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
 	}
+	// desk probes back to the caller (127.0.0.1 here) on lap's port.
+	resp := probe()
 	var res ProbeResult
 	json.NewDecoder(resp.Body).Decode(&res)
 	resp.Body.Close()
@@ -449,7 +455,7 @@ func TestProbeDialsBackToCaller(t *testing.T) {
 	}
 
 	lap.srv.Close()
-	resp, _ = http.Get(desk.srv.URL + ProbePath + "?port=" + port)
+	resp = probe()
 	json.NewDecoder(resp.Body).Decode(&res)
 	resp.Body.Close()
 	if res.Reachable || res.Error == "" {
@@ -459,10 +465,18 @@ func TestProbeDialsBackToCaller(t *testing.T) {
 
 func TestProbeRejectsBadPortAndAnonymousLAN(t *testing.T) {
 	desk := newNode(t, "desk", fakeOllama(t, "d").URL)
-	resp, _ := http.Get(desk.srv.URL + ProbePath + "?port=0")
+	req, _ := http.NewRequest(http.MethodGet, desk.srv.URL+ProbePath+"?port=0", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, _ := http.DefaultClient.Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	// A web page can make the browser GET localhost without credentials.
+	resp, _ = http.Get(desk.srv.URL + ProbePath + "?port=7878")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unauthenticated loopback probe status = %d, want 403", resp.StatusCode)
 	}
 	r := httptest.NewRequest(http.MethodGet, ProbePath+"?port=7878", nil)
 	r.RemoteAddr, r.Host = "192.168.1.9:5000", "192.168.1.2:7878"
@@ -482,5 +496,15 @@ func TestForgedPeerSignatureOverTLSRejected(t *testing.T) {
 	lap.gw.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusUnauthorized || w.Header().Get(peerauth.ProofHeader) != "" {
 		t.Fatalf("status=%d proof=%q", w.Code, w.Header().Get(peerauth.ProofHeader))
+	}
+}
+
+func TestPeerURLEscapesIPv6Zone(t *testing.T) {
+	u := registry.PeerURL("[fe80::1%en0]:7878", ProbePath, "port=7878")
+	if _, err := url.Parse(u); err != nil {
+		t.Fatalf("PeerURL produced unparseable %q: %v", u, err)
+	}
+	if !strings.Contains(u, "%25en0") {
+		t.Fatalf("zone not escaped: %q", u)
 	}
 }

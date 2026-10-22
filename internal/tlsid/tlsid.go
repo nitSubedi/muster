@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/big"
 	"os"
@@ -26,20 +27,27 @@ type Identity struct {
 	FP   string
 }
 
-// LoadOrCreate reads node.crt/node.key from dir, generating them on first
-// use. The key file is 0600.
+// LoadOrCreate reads dir/node.pem (certificate and key together),
+// generating it on first use. The pair lives in one file written by atomic
+// rename, so two processes starting at once can never leave a key that
+// doesn't match its certificate. The file is 0600.
 func LoadOrCreate(dir string) (Identity, error) {
-	certPath, keyPath := filepath.Join(dir, "node.crt"), filepath.Join(dir, "node.key")
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	path := filepath.Join(dir, "node.pem")
+	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		if err := generate(certPath, keyPath); err != nil {
+		if err := generate(path); err != nil {
 			return Identity{}, err
 		}
-		cert, err = tls.LoadX509KeyPair(certPath, keyPath)
+		b, err = os.ReadFile(path)
 	}
 	if err != nil {
 		return Identity{}, err
 	}
+	cert, err := tls.X509KeyPair(b, b)
+	if err != nil {
+		return Identity{}, fmt.Errorf("%s: %w", path, err)
+	}
+	os.Chmod(path, 0o600)
 	return Identity{Cert: cert, FP: Fingerprint(cert.Certificate[0])}, nil
 }
 
@@ -63,7 +71,7 @@ func PeerFP(cs *tls.ConnectionState) string {
 	return Fingerprint(cs.PeerCertificates[0].Raw)
 }
 
-func generate(certPath, keyPath string) error {
+func generate(path string) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return err
@@ -85,11 +93,26 @@ func generate(certPath, keyPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	out := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})...)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".node-*.pem")
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Link fails if another process won the race; then we use its pair.
+	if err := os.Link(tmp.Name(), path); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return nil
 }

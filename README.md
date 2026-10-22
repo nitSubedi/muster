@@ -35,8 +35,10 @@ curl -fsSL https://raw.githubusercontent.com/maauri/muster/main/install.sh | sh
 # or: brew install maauri/tap/muster
 ```
 
-The installer verifies the binary's SHA-256 against the release checksums
-and installs to `/usr/local/bin`, or to `~/.local/bin` without sudo.
+The installer verifies the binary's SHA-256 against the release checksums,
+which catches corrupted downloads (it's not a signature: the checksums ship
+with the same release). It installs to `/usr/local/bin`, or to
+`~/.local/bin` without sudo, and restarts a running service on upgrade.
 Windows: download `muster-windows-amd64.exe` from Releases.
 
 ## Quick start

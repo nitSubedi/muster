@@ -257,6 +257,12 @@ type ProbeResult struct {
 // authenticated node fetch. The target host is always the request's source
 // address, never caller-supplied, so this cannot be aimed at third parties.
 func (g *Gateway) handleProbe(w http.ResponseWriter, r *http.Request) {
+	// Loopback trust isn't enough: any web page can make the browser GET
+	// localhost, and a probe makes this agent send signed requests.
+	if r.Header.Get(peerauth.Header) == "" && !g.hasToken(r) {
+		writeError(w, r, http.StatusForbidden, "muster: probe requires a peer signature or the cluster token")
+		return
+	}
 	port, err := strconv.Atoi(r.URL.Query().Get("port"))
 	ap, perr := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil || port < 1 || port > 65535 || perr != nil {
@@ -329,11 +335,11 @@ func retryable(code int, routed bool) bool {
 // cluster key in their response, or the response is discarded.
 func (g *Gateway) send(r *http.Request, c router.Candidate, path string, body []byte) (*http.Response, error) {
 	target := g.backend + path
-	if !c.Local {
-		target = "https://" + c.Addr + ForwardPrefix + path
-	}
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
+	}
+	if !c.Local {
+		target = registry.PeerURL(c.Addr, ForwardPrefix+path, r.URL.RawQuery)
 	}
 	if c.Local && g.backend == "" {
 		return nil, errors.New("no local backend")

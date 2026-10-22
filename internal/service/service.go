@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 )
 
 // Label identifies the service to launchd and systemd.
@@ -144,6 +146,12 @@ func (m *Manager) Install(s Spec) error {
 	if !filepath.IsAbs(s.Exe) {
 		return fmt.Errorf("binary path %q must be absolute", s.Exe)
 	}
+	for _, a := range append([]string{s.Exe}, s.Args...) {
+		if strings.IndexFunc(a, unicode.IsControl) >= 0 {
+			// A newline would start a new directive in the systemd unit.
+			return fmt.Errorf("argument %q contains a control character", a)
+		}
+	}
 	_ = m.Uninstall() // idempotent reinstall
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -154,7 +162,16 @@ func (m *Manager) Install(s Spec) error {
 		if err := os.WriteFile(path, []byte(Plist(s)), 0o644); err != nil {
 			return err
 		}
-		return m.run("launchctl", "bootstrap", m.domain(), path)
+		// bootout is asynchronous; bootstrap can briefly fail with
+		// "Bootstrap failed: 5" right after a reinstall.
+		var err error
+		for i := 0; i < 5; i++ {
+			if err = m.run("launchctl", "bootstrap", m.domain(), path); err == nil {
+				return nil
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+		return err
 	default:
 		if err := os.WriteFile(path, []byte(Unit(s)), 0o644); err != nil {
 			return err

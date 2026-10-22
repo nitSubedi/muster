@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -198,7 +199,7 @@ func (r *Registry) Run(ctx context.Context, interval time.Duration, refreshSelf 
 // proof bound to the certificate it presented. It returns that
 // certificate's fingerprint for pinning.
 func (r *Registry) Fetch(ctx context.Context, addr string) (node.Info, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+NodePath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, PeerURL(addr, NodePath, ""), nil)
 	if err != nil {
 		return node.Info{}, "", err
 	}
@@ -223,6 +224,12 @@ func (r *Registry) Fetch(ctx context.Context, addr string) (node.Info, string, e
 		return node.Info{}, "", fmt.Errorf("peer returned no node id")
 	}
 	return info, fp, nil
+}
+
+// PeerURL builds an https URL for a peer address. url.URL escapes IPv6
+// zones ("[fe80::1%en0]"), which string concatenation does not.
+func PeerURL(addr, path, rawQuery string) string {
+	return (&url.URL{Scheme: "https", Host: addr, Path: path, RawQuery: rawQuery}).String()
 }
 
 // Pin returns the certificate fingerprint proved by the peer at addr, or ""

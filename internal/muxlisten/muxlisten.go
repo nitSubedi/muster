@@ -5,12 +5,18 @@ package muxlisten
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"sync"
 	"time"
 )
 
-const sniffTimeout = 10 * time.Second
+const (
+	sniffTimeout = 3 * time.Second
+	// maxSniffing bounds connections that have not yet sent a byte, so a
+	// flood of silent sockets cannot exhaust file descriptors.
+	maxSniffing = 256
+)
 
 type result struct {
 	conn net.Conn
@@ -22,6 +28,7 @@ type result struct {
 type Listener struct {
 	net.Listener
 	cfg   *tls.Config
+	sem   chan struct{}
 	conns chan result
 	once  sync.Once
 	done  chan struct{}
@@ -30,22 +37,45 @@ type Listener struct {
 // New wraps l. Sniffing happens off the accept loop, so a client that
 // connects and stays silent cannot stall other connections.
 func New(l net.Listener, cfg *tls.Config) *Listener {
-	m := &Listener{Listener: l, cfg: cfg, conns: make(chan result), done: make(chan struct{})}
+	m := &Listener{Listener: l, cfg: cfg, sem: make(chan struct{}, maxSniffing), conns: make(chan result), done: make(chan struct{})}
 	go m.acceptLoop()
 	return m
 }
 
+// acceptLoop survives temporary errors (EMFILE, ECONNABORTED) with
+// backoff, as net/http does; returning on them would leave Accept blocked
+// forever while the process looks healthy.
 func (m *Listener) acceptLoop() {
+	backoff := 5 * time.Millisecond
 	for {
 		c, err := m.Listener.Accept()
 		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Temporary() && !errors.Is(err, net.ErrClosed) { //nolint:staticcheck // Temporary is still the accept-retry signal net/http uses
+				select {
+				case <-time.After(backoff):
+				case <-m.done:
+					return
+				}
+				backoff = min(backoff*2, time.Second)
+				continue
+			}
 			select {
 			case m.conns <- result{err: err}:
 			case <-m.done:
 			}
 			return
 		}
-		go m.sniff(c)
+		backoff = 5 * time.Millisecond
+		select {
+		case m.sem <- struct{}{}:
+			go func() {
+				defer func() { <-m.sem }()
+				m.sniff(c)
+			}()
+		default:
+			c.Close() // too many silent connections; shed load
+		}
 	}
 }
 

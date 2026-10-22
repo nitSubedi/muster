@@ -36,11 +36,12 @@ class Muster < Formula
     bin.install Dir["muster-*"].first => "muster"
   end
 
-  service do
-    run [opt_bin/"muster", "agent"]
-    keep_alive true
-    log_path var/"log/muster.log"
-    error_log_path var/"log/muster.log"
+  def caveats
+    <<~EOS
+      Start Muster at login with:
+        muster service install
+      (Not `brew services`: muster manages its own per-user service.)
+    EOS
   end
 
   test do

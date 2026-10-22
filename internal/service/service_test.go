@@ -108,3 +108,15 @@ func TestRejectsRelativeExeAndWindows(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRejectsControlCharactersInArgs(t *testing.T) {
+	m, calls := fakeManager(t, "linux")
+	err := m.Install(Spec{Exe: "/usr/bin/muster", Args: []string{"--name", "x\nExecStartPre=/tmp/evil"}})
+	if err == nil || len(*calls) != 0 {
+		t.Fatalf("injection accepted: err=%v calls=%v", err, *calls)
+	}
+	path, _ := m.Path()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("unit written despite rejection")
+	}
+}

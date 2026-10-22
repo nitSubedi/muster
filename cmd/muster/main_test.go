@@ -37,3 +37,16 @@ func TestHasFlag(t *testing.T) {
 		t.Fatal("false positive")
 	}
 }
+
+func TestStablePathAvoidsHomebrewCellar(t *testing.T) {
+	cases := [][3]string{
+		{"/opt/homebrew/bin/muster", "/opt/homebrew/Cellar/muster/0.2.0/bin/muster", "/opt/homebrew/bin/muster"},
+		{"/opt/homebrew/Cellar/muster/0.2.0/bin/muster", "/opt/homebrew/Cellar/muster/0.2.0/bin/muster", "/opt/homebrew/bin/muster"},
+		{"/home/m/.local/bin/muster", "/home/m/.local/bin/muster", "/home/m/.local/bin/muster"},
+	}
+	for _, c := range cases {
+		if got := stablePath(c[0], c[1]); got != c[2] {
+			t.Errorf("stablePath(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
