@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.2 — 2026-10-22
+
+### Changed
+- `muster doctor` shows paths under your home directory as `~/…`, so its
+  output can be shared or screenshotted without revealing your username.
+
 ## v0.2.1 — 2026-10-22
 
 ### Fixed

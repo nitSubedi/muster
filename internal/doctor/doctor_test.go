@@ -214,3 +214,13 @@ func TestDiagnose(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigPathShownWithTilde(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if got := tildePath(filepath.Join(home, "x", "config.json")); got != filepath.Join("~", "x", "config.json") {
+		t.Fatalf("tildePath = %q", got)
+	}
+	if got := tildePath("/etc/muster.json"); got != "/etc/muster.json" {
+		t.Fatalf("tildePath outside home = %q", got)
+	}
+}

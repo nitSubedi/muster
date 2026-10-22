@@ -88,13 +88,14 @@ func Run(ctx context.Context, env Env) []Result {
 func checkConfig(env Env) Result {
 	r := Result{Check: "Config"}
 	st, err := os.Stat(env.ConfigPath)
+	shown := tildePath(env.ConfigPath)
 	switch {
 	case err != nil:
-		r.Status, r.Detail, r.Fix = Fail, "no config at "+env.ConfigPath, "run `muster agent` once to create a cluster, or `muster join` to join one"
+		r.Status, r.Detail, r.Fix = Fail, "no config at "+shown, "run `muster agent` once to create a cluster, or `muster join` to join one"
 	case env.GOOS != "windows" && st.Mode().Perm()&0o077 != 0:
-		r.Status, r.Detail, r.Fix = Fail, fmt.Sprintf("%s is readable by other users (%v)", env.ConfigPath, st.Mode().Perm()), "chmod 600 "+shellQuote(env.ConfigPath)
+		r.Status, r.Detail, r.Fix = Fail, fmt.Sprintf("%s is readable by other users (%v)", shown, st.Mode().Perm()), "chmod 600 "+shellQuote(env.ConfigPath)
 	default:
-		r.Detail = env.ConfigPath
+		r.Detail = shown
 	}
 	return r
 }
@@ -332,6 +333,19 @@ func detectFirewall() string {
 		}
 	}
 	return ""
+}
+
+// tildePath shows paths under the home directory as ~/..., so doctor
+// output can be shared without revealing the username.
+func tildePath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if rel, ok := strings.CutPrefix(p, home+string(os.PathSeparator)); ok {
+		return "~" + string(os.PathSeparator) + rel
+	}
+	return p
 }
 
 func shellQuote(s string) string {

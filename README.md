@@ -189,7 +189,7 @@ $ muster doctor
 **Success looks like:**
 
 ```console
-✔ Config     /Users/you/Library/Application Support/muster/config.json
+✔ Config     ~/Library/Application Support/muster/config.json
 ✔ Ollama     0.40.8 at http://127.0.0.1:11434
 ✔ Exposure   Ollama is only reachable through Muster
 ✔ Agent      laptop on port 7878
