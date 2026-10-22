@@ -40,7 +40,7 @@ class Muster < Formula
     <<~EOS
       Start Muster at login with:
         muster service install
-      (Not `brew services`: muster manages its own per-user service.)
+      (Not brew services: muster manages its own per-user service.)
     EOS
   end
 
