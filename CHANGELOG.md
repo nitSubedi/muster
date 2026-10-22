@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — v0.2.0
+## v0.2.0 — 2026-10-22
 
 ### Added
 - `muster doctor`: checks config permissions, Ollama, **Ollama network
@@ -48,7 +48,7 @@
   restarts a running service after an upgrade.
 - Homebrew formula no longer defines a competing `brew services` unit.
 
-## Unreleased — v0.1.0
+## v0.1.0 — 2026-10-22 (not released separately)
 
 ### Added
 - `muster agent`: discovery (UDP beacons scoped by cluster ID), static peers,
