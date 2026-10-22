@@ -56,6 +56,21 @@ muster agent
 
 Within a few seconds, `muster status` on either machine shows both.
 
+Adding a headless server over SSH takes one line:
+
+```sh
+muster token | ssh you@server 'muster join && muster agent'
+```
+
+**Linux with firewalld (Fedora, RHEL, Rocky, Alma)** blocks Muster by
+default. Open the ports on that machine:
+
+```sh
+sudo firewall-cmd --permanent --add-port=7878/tcp --add-port=7879/udp && sudo firewall-cmd --reload
+```
+
+On Ubuntu with ufw enabled, run `sudo ufw allow 7878/tcp && sudo ufw allow 7879/udp`.
+
 **3. Point your apps at Muster**
 
 | Client | Setting |

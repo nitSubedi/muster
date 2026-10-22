@@ -250,10 +250,26 @@ func state(r registry.PeerStatus) string {
 	case r.Healthy || (r.Local && !r.Info.BackendUp):
 		return "no-ollama"
 	case r.Error != "":
-		return "down: " + shorten(r.Error, 40)
+		return "down: " + diagnose(r.Error)
 	default:
 		return "connecting"
 	}
+}
+
+// diagnose turns a peer poll error into the likely cause and fix.
+// Connection refused or no route usually means a host firewall
+// (firewalld on Fedora/RHEL/Rocky, ufw on Ubuntu) or an agent that isn't
+// running.
+func diagnose(err string) string {
+	switch {
+	case strings.Contains(err, "connection refused"), strings.Contains(err, "no route to host"):
+		return "unreachable (agent stopped, or firewall: open tcp 7878 + udp 7879 on that device)"
+	case strings.Contains(err, "i/o timeout"), strings.Contains(err, "deadline exceeded"):
+		return "timed out (asleep, or firewall dropping tcp 7878)"
+	case strings.Contains(err, "failed authentication"), strings.Contains(err, "401"):
+		return "different cluster (run `muster join` there with this cluster's token)"
+	}
+	return shorten(err, 60)
 }
 
 func hardware(i node.Info) string {
