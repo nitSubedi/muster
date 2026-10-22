@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"runtime"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +62,7 @@ func env(t *testing.T, a *agent, ollamaURL string) Env {
 	e := DefaultEnv(a.srv.URL, ollamaURL, cfg, peerauth.New(token))
 	e.LocalAddrs = func() []netip.Addr { return nil }
 	e.Firewall = func() string { return "firewalld" }
-	e.GOOS = "linux"
+	e.GOOS = runtime.GOOS
 	return e
 }
 
@@ -170,6 +171,9 @@ func TestExposedOllamaFails(t *testing.T) {
 func TestConfigPermissions(t *testing.T) {
 	lap := newAgent(t, "lap")
 	e := env(t, lap, fakeOllama(t).URL)
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; the token file inherits the profile ACL")
+	}
 	os.Chmod(e.ConfigPath, 0o644)
 	if c := checkConfig(e); c.Status != Fail || !strings.Contains(c.Fix, "chmod 600") {
 		t.Fatalf("Config = %+v", c)
@@ -199,6 +203,8 @@ func TestDiagnose(t *testing.T) {
 	cases := []struct{ addr, err, want string }{
 		{"192.168.1.98:7890", `dial tcp 192.168.1.98:7890: connect: connection refused`, "open tcp 7890 + udp 7879"},
 		{"10.0.0.2:7878", `dial tcp 10.0.0.2:7878: connect: no route to host`, "open tcp 7878"},
+		{"10.0.0.2:7878", `dial tcp 10.0.0.2:7878: connectex: No connection could be made because the target machine actively refused it.`, "open tcp 7878"},
+		{"10.0.0.2:7878", `dial tcp 10.0.0.2:7878: connectex: A socket operation was attempted to an unreachable host.`, "open tcp 7878"},
 		{"x:7878", `dial tcp x: i/o timeout`, "asleep"},
 		{"x:7878", `peer failed authentication (different cluster token?)`, "muster join"},
 	}

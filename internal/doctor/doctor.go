@@ -264,7 +264,8 @@ func Diagnose(addr, err string) string {
 		port = p
 	}
 	switch {
-	case strings.Contains(err, "connection refused"), strings.Contains(err, "no route to host"):
+	case strings.Contains(err, "connection refused"), strings.Contains(err, "no route to host"),
+		strings.Contains(err, "actively refused"), strings.Contains(err, "unreachable"): // Windows wording
 		return fmt.Sprintf("unreachable (agent stopped, or firewall: open tcp %s + udp %d on that device)", port, discovery.Port)
 	case strings.Contains(err, "i/o timeout"), strings.Contains(err, "deadline exceeded"):
 		return fmt.Sprintf("timed out (asleep, or firewall dropping tcp %s)", port)

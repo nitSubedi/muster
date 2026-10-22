@@ -143,7 +143,9 @@ func (m *Manager) Install(s Spec) error {
 	if err != nil {
 		return err
 	}
-	if !filepath.IsAbs(s.Exe) {
+	// Only macOS/Linux reach here, so check for a Unix absolute path
+	// explicitly rather than with the host's filepath rules.
+	if !strings.HasPrefix(s.Exe, "/") {
 		return fmt.Errorf("binary path %q must be absolute", s.Exe)
 	}
 	for _, a := range append([]string{s.Exe}, s.Args...) {
