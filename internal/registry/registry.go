@@ -1,0 +1,260 @@
+// Package registry keeps the live view of every node in the cluster: the
+// local node plus peers found by discovery or configured statically.
+package registry
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/maauri/muster/internal/node"
+	"github.com/maauri/muster/internal/router"
+)
+
+const (
+	// UnhealthyAfter consecutive poll failures marks a peer unhealthy.
+	UnhealthyAfter = 3
+	// ForgetAfter without a beacon removes a discovered (non-static) peer.
+	ForgetAfter = 30 * time.Second
+	// NodePath is the agent endpoint that returns node.Info.
+	NodePath = "/muster/v1/node"
+	// TokenHeader carries the cluster token between agents.
+	TokenHeader = "X-Muster-Token"
+)
+
+type peer struct {
+	addr       string
+	static     bool
+	info       node.Info
+	polled     bool
+	failures   int
+	lastBeacon time.Time
+	lastErr    string
+}
+
+// Registry is safe for concurrent use.
+type Registry struct {
+	token  string
+	client *http.Client
+	now    func() time.Time
+
+	mu      sync.Mutex
+	self    node.Info
+	peers   map[string]*peer // by addr
+	pending map[string]int   // by node ID
+}
+
+// New returns an empty registry that authenticates to peers with token.
+func New(token string) *Registry {
+	return &Registry{
+		token:   token,
+		client:  &http.Client{Timeout: 2 * time.Second},
+		now:     time.Now,
+		peers:   map[string]*peer{},
+		pending: map[string]int{},
+	}
+}
+
+// SetSelf replaces the local node's info.
+func (r *Registry) SetSelf(info node.Info) {
+	r.mu.Lock()
+	r.self = info
+	r.mu.Unlock()
+}
+
+// Self returns the local node's info.
+func (r *Registry) Self() node.Info {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.self
+}
+
+// AddStatic registers a peer that is polled forever and never forgotten.
+func (r *Registry) AddStatic(addr string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.peers[addr]; ok {
+		p.static = true
+		return
+	}
+	r.peers[addr] = &peer{addr: addr, static: true}
+}
+
+// Observe records a discovery beacon from addr.
+func (r *Registry) Observe(addr string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.peers[addr]
+	if !ok {
+		p = &peer{addr: addr}
+		r.peers[addr] = p
+	}
+	p.lastBeacon = r.now()
+}
+
+// PollOnce refreshes every peer concurrently and forgets stale ones.
+func (r *Registry) PollOnce(ctx context.Context) {
+	r.mu.Lock()
+	now := r.now()
+	var addrs []string
+	for addr, p := range r.peers {
+		if !p.static && now.Sub(p.lastBeacon) > ForgetAfter {
+			delete(r.peers, addr)
+			continue
+		}
+		addrs = append(addrs, addr)
+	}
+	r.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			info, err := r.fetch(ctx, addr)
+			r.record(addr, info, err)
+		}()
+	}
+	wg.Wait()
+}
+
+// Run polls every interval until ctx is done. refreshSelf, if non-nil, is
+// called first each round to update the local node.
+func (r *Registry) Run(ctx context.Context, interval time.Duration, refreshSelf func(context.Context) node.Info) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		if refreshSelf != nil {
+			r.SetSelf(refreshSelf(ctx))
+		}
+		r.PollOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (r *Registry) fetch(ctx context.Context, addr string) (node.Info, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+NodePath, nil)
+	if err != nil {
+		return node.Info{}, err
+	}
+	req.Header.Set(TokenHeader, r.token)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return node.Info{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return node.Info{}, fmt.Errorf("%s", resp.Status)
+	}
+	var info node.Info
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return node.Info{}, err
+	}
+	if info.ID == "" {
+		return node.Info{}, fmt.Errorf("peer returned no node id")
+	}
+	return info, nil
+}
+
+func (r *Registry) record(addr string, info node.Info, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.peers[addr]
+	if !ok {
+		return // forgotten while polling
+	}
+	if err != nil {
+		p.failures++
+		p.lastErr = err.Error()
+		return
+	}
+	p.info, p.polled, p.failures, p.lastErr = info, true, 0, ""
+}
+
+func (p *peer) healthy() bool { return p.polled && p.failures < UnhealthyAfter }
+
+// Candidates returns the local node and every healthy peer, deduplicated by
+// node ID (a peer may be reachable both by beacon and by --peer), with
+// this gateway's pending dispatch counts filled in.
+func (r *Registry) Candidates() []router.Candidate {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []router.Candidate
+	seen := map[string]bool{}
+	if r.self.ID != "" && r.self.BackendUp {
+		out = append(out, router.Candidate{Info: r.self, Local: true, Pending: r.pending[r.self.ID]})
+		seen[r.self.ID] = true
+	}
+	for _, p := range r.sortedPeers() {
+		if !p.healthy() || !p.info.BackendUp || seen[p.info.ID] || p.info.ID == r.self.ID {
+			continue
+		}
+		seen[p.info.ID] = true
+		out = append(out, router.Candidate{Info: p.info, Addr: p.addr, Pending: r.pending[p.info.ID]})
+	}
+	return out
+}
+
+// Begin marks a request dispatched to nodeID; call the returned func when
+// the response is complete.
+func (r *Registry) Begin(nodeID string) (done func()) {
+	r.mu.Lock()
+	r.pending[nodeID]++
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if r.pending[nodeID]--; r.pending[nodeID] <= 0 {
+				delete(r.pending, nodeID)
+			}
+			r.mu.Unlock()
+		})
+	}
+}
+
+// PeerStatus is one row of `muster status`.
+type PeerStatus struct {
+	Addr    string    `json:"addr,omitempty"`
+	Local   bool      `json:"local"`
+	Static  bool      `json:"static"`
+	Healthy bool      `json:"healthy"`
+	Error   string    `json:"error,omitempty"`
+	Info    node.Info `json:"info"`
+}
+
+// Status returns the local node followed by every known peer.
+func (r *Registry) Status() []PeerStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []PeerStatus{{Local: true, Healthy: r.self.BackendUp, Info: r.self}}
+	for _, p := range r.sortedPeers() {
+		out = append(out, PeerStatus{
+			Addr: p.addr, Static: p.static, Healthy: p.healthy(), Error: p.lastErr, Info: p.info,
+		})
+	}
+	return out
+}
+
+// sortedPeers must be called with r.mu held.
+func (r *Registry) sortedPeers() []*peer {
+	ps := make([]*peer, 0, len(r.peers))
+	for _, p := range r.peers {
+		ps = append(ps, p)
+	}
+	sort.Slice(ps, func(i, j int) bool {
+		if ps[i].static != ps[j].static {
+			return ps[i].static
+		}
+		return ps[i].addr < ps[j].addr
+	})
+	return ps
+}
