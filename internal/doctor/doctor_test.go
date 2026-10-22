@@ -2,13 +2,13 @@ package doctor
 
 import (
 	"context"
-	"runtime"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
