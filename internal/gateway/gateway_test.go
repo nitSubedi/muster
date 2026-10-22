@@ -508,3 +508,14 @@ func TestPeerURLEscapesIPv6Zone(t *testing.T) {
 		t.Fatalf("zone not escaped: %q", u)
 	}
 }
+
+func TestErrorMessagesNotHTMLEscaped(t *testing.T) {
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	r.RemoteAddr, r.Host = "192.168.1.9:5000", "192.168.1.2:7878"
+	w := httptest.NewRecorder()
+	lap.gw.Handler().ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), "Bearer <token>") {
+		t.Fatalf("body = %s", w.Body)
+	}
+}

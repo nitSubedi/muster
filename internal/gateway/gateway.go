@@ -457,7 +457,9 @@ func (g *Gateway) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false) // keep "<token>" readable in error messages
+	enc.Encode(v)
 }
 
 // writeError uses the error shape each API's clients expect.

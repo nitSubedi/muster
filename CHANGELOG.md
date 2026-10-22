@@ -7,16 +7,16 @@
   exposure** (`OLLAMA_HOST=0.0.0.0`), the agent, and peers. It also asks peers
   to connect back (**inbound reachability**) and checks whether **discovery
   broadcasts** arrive. Each problem prints an OS-specific fix (firewalld, ufw,
-  macOS, Windows). Verified on the Rocky field box (field tests F1–F3).
+  macOS, Windows). Verified on the Linux field box (field tests F1–F3).
 - `/muster/v1/probe`: an authenticated agent dials back only to the
   caller's own IP, so it can't be pointed at third parties.
 - `muster service install|uninstall|status`: run at login via a per-user
   launchd agent (macOS) or `systemd --user` unit (Linux), with no sudo and
-  automatic restart on crash. Verified on Rocky 9.6 (install, kill -9 →
+  automatic restart on crash. Verified on a RHEL-family Linux box (install, kill -9 →
   restart in ~5 s, uninstall).
 - `install.sh` (`curl | sh`): picks the right binary, verifies SHA-256
   against `SHA256SUMS`, and refuses tampered downloads; no sudo needed.
-  Verified on macOS arm64 and Rocky Linux x86_64.
+  Verified on macOS arm64 and RHEL-family Linux x86_64.
 - Release workflow: tagging `v*` runs tests, builds every platform, publishes
   a GitHub Release, and renders the Homebrew formula
   (`packaging/homebrew/render.sh`).
