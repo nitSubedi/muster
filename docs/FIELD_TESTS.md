@@ -36,3 +36,17 @@ This confirms F1/F2 are firewall-only. With the ports open, zero-config
 discovery works across macOS and RHEL-family Linux. Not yet tested: a
 second node *serving* models (Rocky has no Ollama), and live failover
 between two serving nodes.
+
+### Round 3: two serving nodes (Ollama 0.40.8 installed on Rocky, CPU-only, user-local, no sudo)
+
+| Test | Expectation | Result |
+|---|---|---|
+| T1 Model only on Rocky (`qwen2.5:0.5b`), requested on Mac | Routed to Rocky | ✅ `X-Muster-Node: rocky` |
+| T2 Shared model (`qwen2.5:3b`), loaded on Mac only | Prefer the warm node | ✅ macbook |
+| T3 6 parallel requests, model warm on both | Spread by load | ✅ 3 macbook / 3 rocky |
+| T4 Rocky warm and ranked first; Rocky's agent killed just before the request | Transparent failover | ✅ "connection refused" → macbook answered in 1.9 s including a cold load; client saw no error. Status shows rocky "unreachable" within ~6 s |
+
+| # | Finding | Action |
+|---|---|---|
+| F6 | Ollama ≥ 0.40 ships Linux builds as `.tar.zst` (1.5 GB with CUDA). RHEL-family boxes lack `zstd` by default, and CPU-only nodes need only ~61 MB of it | Installer (v0.2) should detect "no GPU" and tell users which Ollama parts they need, or link to Ollama's installer |
+| F7 | Generation on a 4-core CPU node is far slower than on Apple Silicon, yet the router ranks only on load/memory, so T3 sent half the work to the slow box | v0.3: measure per-node tokens/s from served requests and weight routing by throughput. This is the next most valuable routing improvement |
