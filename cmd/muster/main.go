@@ -559,4 +559,3 @@ func defaultName() string {
 	}
 	return strings.TrimSuffix(h, ".local")
 }
-
