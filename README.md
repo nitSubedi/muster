@@ -83,6 +83,27 @@ On Ubuntu with ufw enabled, run `sudo ufw allow 7878/tcp && sudo ufw allow 7879/
 Every response includes an `X-Muster-Node` header naming the machine that
 served it.
 
+## When something doesn't work
+
+```sh
+muster doctor
+```
+
+Doctor checks this device and asks the other devices in your cluster to
+connect back to it, so it catches problems that are invisible from the
+inside, such as a firewall dropping inbound connections. Every problem comes
+with the command that fixes it:
+
+```
+✔ Agent      rocky on port 7878
+✔ Peers      reachable: macbook
+✘ Inbound    macbook cannot connect to this device on tcp 7878
+             fix: sudo firewall-cmd --permanent --add-port=7878/tcp --add-port=7879/udp && sudo firewall-cmd --reload
+```
+
+It also warns if Ollama is exposed to your network without authentication
+(`OLLAMA_HOST=0.0.0.0`).
+
 ## Tailscale, VPNs and separate subnets
 
 Broadcast discovery only reaches your local subnet. For anything else, list
@@ -134,6 +155,7 @@ muster agent  --listen :7878           API + peer port
 muster status --json                   cluster view from this device
 muster token                           print this cluster's token
 muster join                            save a token pasted on stdin
+muster doctor                          diagnose this device, with fixes
 ```
 
 ## Build from source

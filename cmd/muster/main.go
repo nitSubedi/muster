@@ -23,6 +23,7 @@ import (
 
 	"github.com/maauri/muster/internal/config"
 	"github.com/maauri/muster/internal/discovery"
+	"github.com/maauri/muster/internal/doctor"
 	"github.com/maauri/muster/internal/gateway"
 	"github.com/maauri/muster/internal/node"
 	"github.com/maauri/muster/internal/ollama"
@@ -40,6 +41,7 @@ Usage:
   muster status  [flags]   show the cluster from this device
   muster token   [flags]   print this cluster's token
   muster join    [flags]   save a cluster token (paste it when prompted)
+  muster doctor  [flags]   find out why a device isn't working, with fixes
   muster version
 
 Run "muster <command> -h" for flags.
@@ -60,6 +62,8 @@ func main() {
 		err = runToken(args)
 	case "join":
 		err = runJoin(args)
+	case "doctor":
+		err = runDoctor(args)
 	case "version", "--version", "-v":
 		fmt.Println("muster", version)
 	case "help", "-h", "--help":
@@ -137,7 +141,7 @@ func runAgent(args []string) error {
 	refreshSelf := func(ctx context.Context) node.Info {
 		info := hw
 		info.ID, info.Name, info.Version, info.Backend = cfg.NodeID, *name, version, "ollama"
-		info.InFlight = gw.InFlight()
+		info.InFlight, info.Port = gw.InFlight(), port
 		models, err := oc.Models(ctx)
 		info.BackendUp = err == nil
 		info.Models = models
@@ -250,26 +254,10 @@ func state(r registry.PeerStatus) string {
 	case r.Healthy || (r.Local && !r.Info.BackendUp):
 		return "no-ollama"
 	case r.Error != "":
-		return "down: " + diagnose(r.Error)
+		return "down: " + doctor.Diagnose(r.Addr, r.Error)
 	default:
 		return "connecting"
 	}
-}
-
-// diagnose turns a peer poll error into the likely cause and fix.
-// Connection refused or no route usually means a host firewall
-// (firewalld on Fedora/RHEL/Rocky, ufw on Ubuntu) or an agent that isn't
-// running.
-func diagnose(err string) string {
-	switch {
-	case strings.Contains(err, "connection refused"), strings.Contains(err, "no route to host"):
-		return "unreachable (agent stopped, or firewall: open tcp 7878 + udp 7879 on that device)"
-	case strings.Contains(err, "i/o timeout"), strings.Contains(err, "deadline exceeded"):
-		return "timed out (asleep, or firewall dropping tcp 7878)"
-	case strings.Contains(err, "failed authentication"), strings.Contains(err, "401"):
-		return "different cluster (run `muster join` there with this cluster's token)"
-	}
-	return shorten(err, 60)
 }
 
 func hardware(i node.Info) string {
@@ -343,6 +331,42 @@ func runJoin(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Joined cluster %s. Start (or restart) `muster agent`.\n", config.ClusterID(tok))
+	return nil
+}
+
+func runDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	cfgPath := configFlag(fs)
+	addr := fs.String("addr", "http://127.0.0.1:7878", "local agent URL")
+	backend := fs.String("ollama", envOr("OLLAMA_HOST", "http://127.0.0.1:11434"), "local Ollama URL")
+	fs.Parse(args)
+
+	var auth *peerauth.Auth
+	if b, err := os.ReadFile(*cfgPath); err == nil {
+		var cfg config.Config
+		if json.Unmarshal(b, &cfg) == nil && cfg.Token != "" {
+			auth = peerauth.New(cfg.Token)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	results := doctor.Run(ctx, doctor.DefaultEnv(*addr, normalizeBackend(*backend), *cfgPath, auth))
+
+	icons := map[doctor.Status]string{doctor.OK: "✔", doctor.Warn: "⚠", doctor.Fail: "✘", doctor.Skip: "–"}
+	failed := 0
+	for _, r := range results {
+		fmt.Printf("%s %-10s %s\n", icons[r.Status], r.Check, r.Detail)
+		if r.Fix != "" && (r.Status == doctor.Warn || r.Status == doctor.Fail) {
+			fmt.Printf("  %-10s fix: %s\n", "", r.Fix)
+		}
+		if r.Status == doctor.Fail {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d problem(s) found", failed)
+	}
+	fmt.Println("\nAll good.")
 	return nil
 }
 

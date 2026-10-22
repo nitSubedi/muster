@@ -50,3 +50,19 @@ between two serving nodes.
 |---|---|---|
 | F6 | Ollama ≥ 0.40 ships Linux builds as `.tar.zst` (1.5 GB with CUDA). RHEL-family boxes lack `zstd` by default, and CPU-only nodes need only ~61 MB of it | Installer (v0.2) should detect "no GPU" and tell users which Ollama parts they need, or link to Ollama's installer |
 | F7 | Generation on a 4-core CPU node is far slower than on Apple Silicon, yet the router ranks only on load/memory, so T3 sent half the work to the slow box | v0.3: measure per-node tokens/s from served requests and weight routing by throughput. This is the next most valuable routing improvement |
+
+### Round 4: `muster doctor` against the real firewall (2026-10-22)
+
+Rocky agent on tcp 7890, which firewalld still blocked. Doctor on Rocky:
+
+```
+✔ Peers      reachable: macbook
+✘ Inbound    macbook cannot connect to this device on tcp 7890
+             fix: sudo firewall-cmd --permanent --add-port=7890/tcp --add-port=7879/udp && sudo firewall-cmd --reload
+```
+
+The device couldn't see its own firewall problem (Rocky reached the Mac fine).
+Doctor found it via the peer probe and printed the exact fix with the right
+port. This closes F1–F3 from the user's point of view. The run also caught a
+hard-coded "7878" in the peer diagnosis on the Mac side; it now uses the
+peer's real port.

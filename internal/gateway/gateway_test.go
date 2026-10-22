@@ -370,3 +370,45 @@ func TestOversizedBodyIs413(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
+
+func TestProbeDialsBackToCaller(t *testing.T) {
+	desk := newNode(t, "desk", fakeOllama(t, "d").URL, model("llama3", false))
+	lap := newNode(t, "lap", fakeOllama(t, "l").URL)
+	_, port, _ := strings.Cut(lap.addr(), ":")
+
+	// desk probes back to the caller (127.0.0.1 here) on lap's port.
+	resp, err := http.Get(desk.srv.URL + ProbePath + "?port=" + port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res ProbeResult
+	json.NewDecoder(resp.Body).Decode(&res)
+	resp.Body.Close()
+	if !res.Reachable || res.Addr != lap.addr() {
+		t.Fatalf("probe = %+v", res)
+	}
+
+	lap.srv.Close()
+	resp, _ = http.Get(desk.srv.URL + ProbePath + "?port=" + port)
+	json.NewDecoder(resp.Body).Decode(&res)
+	resp.Body.Close()
+	if res.Reachable || res.Error == "" {
+		t.Fatalf("probe to closed port = %+v", res)
+	}
+}
+
+func TestProbeRejectsBadPortAndAnonymousLAN(t *testing.T) {
+	desk := newNode(t, "desk", fakeOllama(t, "d").URL)
+	resp, _ := http.Get(desk.srv.URL + ProbePath + "?port=0")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	r := httptest.NewRequest(http.MethodGet, ProbePath+"?port=7878", nil)
+	r.RemoteAddr, r.Host = "192.168.1.9:5000", "192.168.1.2:7878"
+	w := httptest.NewRecorder()
+	desk.gw.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous LAN probe status = %d", w.Code)
+	}
+}

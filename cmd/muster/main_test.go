@@ -1,9 +1,6 @@
 package main
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestNormalizeBackend(t *testing.T) {
 	cases := map[string]string{
@@ -29,20 +26,5 @@ func TestListenPort(t *testing.T) {
 	}
 	if _, err := listenPort("7878"); err == nil {
 		t.Fatal("expected error for missing colon")
-	}
-}
-
-func TestDiagnose(t *testing.T) {
-	cases := map[string]string{
-		`Get "http://192.168.1.98:7878/muster/v1/node": dial tcp 192.168.1.98:7878: connect: connection refused`: "firewall",
-		`dial tcp 10.0.0.2:7878: connect: no route to host`:                                                      "firewall",
-		`Get "http://x/muster/v1/node": dial tcp x: i/o timeout`:                                                 "asleep",
-		`peer failed authentication (different cluster token?)`:                                                  "muster join",
-		`401 Unauthorized`: "muster join",
-	}
-	for in, want := range cases {
-		if got := diagnose(in); !strings.Contains(got, want) {
-			t.Errorf("diagnose(%q) = %q, want mention of %q", in, got, want)
-		}
 	}
 }

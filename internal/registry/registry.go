@@ -164,7 +164,7 @@ func (r *Registry) PollOnce(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			info, err := r.fetch(ctx, addr)
+			info, err := r.Fetch(ctx, addr)
 			r.record(addr, info, err)
 		}()
 	}
@@ -189,7 +189,9 @@ func (r *Registry) Run(ctx context.Context, interval time.Duration, refreshSelf 
 	}
 }
 
-func (r *Registry) fetch(ctx context.Context, addr string) (node.Info, error) {
+// Fetch retrieves node.Info from the agent at addr, requiring it to prove it
+// holds the cluster key.
+func (r *Registry) Fetch(ctx context.Context, addr string) (node.Info, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+NodePath, nil)
 	if err != nil {
 		return node.Info{}, err
@@ -275,11 +277,15 @@ func (r *Registry) Begin(nodeID string) (done func()) {
 
 // PeerStatus is one row of `muster status`.
 type PeerStatus struct {
-	Addr    string    `json:"addr,omitempty"`
-	Local   bool      `json:"local"`
-	Static  bool      `json:"static"`
-	Healthy bool      `json:"healthy"`
-	Error   string    `json:"error,omitempty"`
+	Addr    string `json:"addr,omitempty"`
+	Local   bool   `json:"local"`
+	Static  bool   `json:"static"`
+	Healthy bool   `json:"healthy"`
+	Error   string `json:"error,omitempty"`
+	// Beacons reports whether this device has received discovery beacons
+	// from the peer. Healthy but false means UDP discovery is blocked
+	// somewhere between them.
+	Beacons bool      `json:"beacons"`
 	Info    node.Info `json:"info"`
 }
 
@@ -290,7 +296,7 @@ func (r *Registry) Status() []PeerStatus {
 	out := []PeerStatus{{Local: true, Healthy: r.self.BackendUp, Info: r.self}}
 	for _, p := range r.sortedPeers() {
 		out = append(out, PeerStatus{
-			Addr: p.addr, Static: p.static, Healthy: p.healthy(), Error: p.lastErr, Info: p.info,
+			Addr: p.addr, Static: p.static, Healthy: p.healthy(), Error: p.lastErr, Beacons: !p.lastBeacon.IsZero(), Info: p.info,
 		})
 	}
 	return out

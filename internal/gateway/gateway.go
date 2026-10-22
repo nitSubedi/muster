@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net/netip"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -32,6 +34,10 @@ const (
 	ForwardPrefix = "/muster/v1/forward"
 	// ClusterPath returns registry.Status for `muster status`.
 	ClusterPath = "/muster/v1/cluster"
+	// ProbePath asks this agent to connect back to the caller, so a device
+	// can learn whether others can reach it (firewalls are invisible from
+	// the inside).
+	ProbePath = "/muster/v1/probe"
 	// NodeHeader names the node that served a response.
 	NodeHeader = "X-Muster-Node"
 
@@ -90,6 +96,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET "+ClusterPath, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, g.reg.Status())
 	})
+	mux.HandleFunc("GET "+ProbePath, g.handleProbe)
 	mux.HandleFunc(ForwardPrefix+"/", g.handleForward)
 	mux.HandleFunc("GET /v1/models", g.handleOpenAIModels)
 	mux.HandleFunc("GET /api/tags", g.handleOllamaTags)
@@ -200,6 +207,33 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	}
 	// Any other error means the client went away; there is no one to answer.
 	return nil, false
+}
+
+// ProbeResult is the answer to a reachability probe.
+type ProbeResult struct {
+	Addr      string `json:"addr"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+}
+
+// handleProbe dials back to the caller's own IP on ?port= and performs an
+// authenticated node fetch. The target host is always the request's source
+// address, never caller-supplied, so this cannot be aimed at third parties.
+func (g *Gateway) handleProbe(w http.ResponseWriter, r *http.Request) {
+	port, err := strconv.Atoi(r.URL.Query().Get("port"))
+	ap, perr := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil || port < 1 || port > 65535 || perr != nil {
+		writeError(w, r, http.StatusBadRequest, "muster: probe needs ?port=1-65535")
+		return
+	}
+	addr := netip.AddrPortFrom(ap.Addr().Unmap(), uint16(port)).String()
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	res := ProbeResult{Addr: addr, Reachable: true}
+	if _, err := g.reg.Fetch(ctx, addr); err != nil {
+		res.Reachable, res.Error = false, err.Error()
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func extractModel(body []byte) string {

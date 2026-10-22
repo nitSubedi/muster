@@ -30,6 +30,8 @@ type Info struct {
 	BackendUp   bool    `json:"backend_up"`
 	Models      []Model `json:"models"`
 	InFlight    int     `json:"in_flight"`
+	// Port is the agent's API port, used for reachability probes.
+	Port int `json:"port,omitempty"`
 }
 
 // AccelMemory is the memory available for model weights: total GPU memory

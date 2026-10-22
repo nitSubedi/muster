@@ -11,8 +11,8 @@ Discovery, routing, failover, OpenAI + Ollama APIs, token auth, `status`.
 - [ ] **Run at login**: `muster service install` (launchd / systemd / Windows service).
 - [ ] **TLS between agents**: per-node self-signed certificates, pinned on first contact by cluster token (closes the README's known limitation).
 - [ ] **Live load reporting**: push in-flight changes to peers on change, not just on 2 s polls, so request bursts spread immediately.
-- [ ] **`muster doctor`**: checks firewall, Ollama binding, discovery reachability, and token mismatch, and prints the fix. Top priority after field test F1/F2: firewalld blocks Muster on every RHEL-family distro.
-- [ ] **Reachability reports**: nodes tell each other who they can reach, so status can say "rocky can't reach this device" (field test F3).
+- [x] **`muster doctor`**: checks firewall, Ollama binding, discovery reachability, and token mismatch, and prints the fix. Top priority after field test F1/F2: firewalld blocks Muster on every RHEL-family distro.
+- [x] **Reachability reports**: done as doctor's peer probe (field test F3).
 
 ## v0.3 — "Works with what I already run" (reach)
 - [ ] Backend interface; adapters for **LM Studio**, **llama.cpp server**, **vLLM** (all OpenAI-compatible).

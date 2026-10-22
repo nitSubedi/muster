@@ -95,6 +95,15 @@ timeout, because long generations are legitimate.
 Requests without a model (`/api/version`, unknown paths) go to local Ollama.
 `/v1/models` and `/api/tags` are answered by the gateway from the registry.
 
+## Diagnostics (`muster doctor`)
+
+Host firewalls are invisible from the inside: firewalld won't even report
+its rules to a non-root user. So doctor asks each healthy peer to call
+`GET /muster/v1/probe?port=N`. The peer connects back to the **caller's
+source IP** (never a caller-supplied host) and performs a signed node fetch.
+Only cluster-authenticated callers can probe. A peer that is healthy but has
+`beacons: false` in status means UDP discovery is blocked or crosses subnets.
+
 ## Security model
 
 - Threat: other devices on the same LAN. Not in scope: a compromised device

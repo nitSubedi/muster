@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — v0.2.0
+
+### Added
+- `muster doctor`: checks config permissions, Ollama, **Ollama network
+  exposure** (`OLLAMA_HOST=0.0.0.0`), the agent, and peers. It also asks peers
+  to connect back (**inbound reachability**) and checks whether **discovery
+  broadcasts** arrive. Each problem prints an OS-specific fix (firewalld, ufw,
+  macOS, Windows). Verified on the Rocky field box (field tests F1–F3).
+- `/muster/v1/probe`: an authenticated agent dials back only to the
+  caller's own IP, so it can't be pointed at third parties.
+- `muster status` names the peer's actual port in unreachable diagnoses.
+
 ## Unreleased — v0.1.0
 
 ### Added
