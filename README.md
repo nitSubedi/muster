@@ -301,18 +301,18 @@ minutes.
 **Success looks like:**
 
 ```console
-DEVICE   MEMORY READ  LLM MODEL    GENERATE    READ PROMPT  EFFECTIVE
-laptop   74.0 GB/s    qwen2.5:7b   28.3 tok/s  283 tok/s    132.8 GB/s
-desktop  41.2 GB/s    qwen2.5:7b   21.0 tok/s  950 tok/s    98.7 GB/s
+DEVICE   MEMORY READ  LLM MODEL   GENERATE    READ PROMPT  EFFECTIVE
+laptop   74.0 GB/s    qwen2.5:7b  28.3 tok/s  283 tok/s    132.8 GB/s
+desktop  41.2 GB/s    qwen2.5:7b  21.0 tok/s  950 tok/s    98.5 GB/s
 
-LINK               ROUND TRIP (median / p90 / min)  THROUGHPUT
-laptop → desktop   0.4 ms / 0.6 ms / 0.3 ms         112.0 MB/s
+LINK              ROUND TRIP (median / p90 / min)  THROUGHPUT
+laptop → desktop  0.4 ms / 0.6 ms / 0.3 ms         112.0 MB/s
 
 WHAT THIS MEANS (estimates from the numbers above)
   Many independent jobs (batch): 1.74× the work of laptop alone, since every device's capacity adds up.
-  Splitting a 7B model layer by layer: needs round trips under 0.3 ms; yours are 0.4 ms, so slower than one device (49 ms vs 35 ms per token).
-  Splitting a 70B model layer by layer: needs round trips under 0.8 ms; yours are 0.4 ms, so faster (238 ms vs 301 ms per token).
-  Reading a 2000-token prompt as an assembly line (7B model): 4.3 s vs 7.1 s alone, so faster.
+  Splitting a 7B model layer by layer: needs round trips under 0.3 ms; yours are 0.4 ms, so slower than one device (43 ms vs 35 ms per token).
+  Splitting a 70B model layer by layer: needs round trips under 0.8 ms; yours are 0.4 ms, so faster (237 ms vs 301 ms per token).
+  Reading a 2000-token prompt as an assembly line (7B model): 1.6 s vs 2.1 s alone, so faster.
 ```
 
 Then let Muster recommend a role for each device:
