@@ -10,8 +10,9 @@ import (
 
 // Report is a whole-cluster benchmark.
 type Report struct {
-	Devices []Device `json:"devices"`
-	Links   []Link   `json:"links"`
+	MeasuredAt time.Time `json:"measured_at"`
+	Devices    []Device  `json:"devices"`
+	Links      []Link    `json:"links"`
 }
 
 // Reference models for the "what this means" estimates (Q4 sizes).

@@ -8,7 +8,11 @@
   and each link's round-trip time (median / p90 / min) and throughput. It then
   estimates when pooling helps: batch throughput, splitting a model layer by
   layer, and long prompts as an assembly line. Busy devices are flagged.
-  Peers run their part over the authenticated TLS channel.
+  Peers run their part over the authenticated TLS channel. Results are saved
+  for `muster plan`.
+- `muster plan` (dry run, ADR-0006): recommends a role for each device (chat,
+  embeddings, batch, standby) from measured speed adjusted for live load, with
+  reasons and concrete suggestions. Devices now report their load average.
 
 ### Removed
 - `docs/demo.gif`: an early broken recording; the final demo will replace it.

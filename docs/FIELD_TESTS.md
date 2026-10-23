@@ -75,3 +75,24 @@ peer's real port.
 | Linux box → laptop's model, over TLS forward | ✅ `X-Muster-Node: laptop` |
 | `openssl s_client` to linuxbox:7878 | ✅ TLSv1.3, TLS_AES_128_GCM_SHA256; cert on the wire = the Linux box's `node.crt` (SHA-256 match) |
 | Signed peer request over plain HTTP | ✅ refused: "agent traffic must use TLS" |
+
+### Round 6: `muster bench` and `muster plan` (2026-10-22)
+
+| Device | Memory read | LLM | Generate | Effective |
+|---|---|---|---|---|
+| laptop (Apple Silicon) | 74–79 GB/s | qwen2.5:7b / 3b | 28 / 60 tok/s | 115–133 GB/s |
+| linuxbox (i5-5200U, 2015) | 3.0–3.2 GB/s | qwen2.5:0.5b | 1.1–1.2 tok/s | 0.4–0.5 GB/s |
+
+Link: 5.7 ms median round trip, p90 spiking from 7 ms to 123 ms between runs
+(Wi-Fi), 11–14 MB/s.
+
+The Linux box was running other workloads the whole time (load ≈ 31 on 4
+threads, 5.5 GB in swap), so it had almost nothing to spare. Bench and plan
+both say so instead of averaging it in.
+
+| # | Finding | Action |
+|---|---|---|
+| F8 | Verdict said "7.1 s vs 7.1 s alone, so faster" | **Fixed:** differences under 5% read "no real difference"; batch under 1.05× reads "no meaningful gain" |
+| F9 | Planner suggested moving embeddings to a device holding 0.4% of capacity | **Fixed:** a device must be free *and* hold ≥ 5% of capacity to take a role off another device |
+| F10 | A stale build that didn't report load made the busy box look idle to the planner | Live load is now part of node status; the plan reflects load at plan time |
+| F11 | Copying a new binary over a running one fails ("text file busy") | Test deploys now rename into place, as `install.sh` does |

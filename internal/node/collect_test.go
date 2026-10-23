@@ -26,3 +26,9 @@ func TestHardwareReportsBasics(t *testing.T) {
 		t.Fatalf("got %+v", h)
 	}
 }
+
+func TestLoad1NonNegative(t *testing.T) {
+	if l := Load1(); l < 0 {
+		t.Fatalf("Load1 = %v", l)
+	}
+}

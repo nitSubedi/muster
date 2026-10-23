@@ -98,7 +98,7 @@ certificate. They're saved readable only by you in
 `%AppData%\muster\` (Windows).
 
 `muster agent` runs in the foreground (Ctrl-C stops it). To run it in the
-background and start it at login instead, see [Run at login](#6-run-at-login).
+background and start it at login instead, see [Run at login](#7-run-at-login).
 
 ---
 
@@ -287,7 +287,62 @@ always run on the device you send them to.
 
 ---
 
-## 6. Run at login
+## 6. See what each machine is good for
+
+```console
+$ muster bench
+```
+
+Bench measures every device (memory speed, real LLM speed through its own
+Ollama, current load) and every link between them (round-trip time and
+throughput). Then it tells you what pooling would actually gain. It takes a few
+minutes.
+
+**Success looks like:**
+
+```console
+DEVICE   MEMORY READ  LLM MODEL    GENERATE    READ PROMPT  EFFECTIVE
+laptop   74.0 GB/s    qwen2.5:7b   28.3 tok/s  283 tok/s    132.8 GB/s
+desktop  41.2 GB/s    qwen2.5:7b   21.0 tok/s  950 tok/s    98.7 GB/s
+
+LINK               ROUND TRIP (median / p90 / min)  THROUGHPUT
+laptop → desktop   0.4 ms / 0.6 ms / 0.3 ms         112.0 MB/s
+
+WHAT THIS MEANS (estimates from the numbers above)
+  Many independent jobs (batch): 1.74× the work of laptop alone, since every device's capacity adds up.
+  Splitting a 7B model layer by layer: needs round trips under 0.3 ms; yours are 0.4 ms, so slower than one device (49 ms vs 35 ms per token).
+  Splitting a 70B model layer by layer: needs round trips under 0.8 ms; yours are 0.4 ms, so faster (238 ms vs 301 ms per token).
+  Reading a 2000-token prompt as an assembly line (7B model): 4.3 s vs 7.1 s alone, so faster.
+```
+
+Then let Muster recommend a role for each device:
+
+```console
+$ muster plan
+ROLE        DEVICE   WHY
+chat        laptop   qwen2.5:7b at ~28 tok/s (largest model that stays above 10 tok/s)
+embeddings  desktop  nomic-embed-text:latest, keeping chat's device free
+batch       laptop   57% of batch work
+batch       desktop  43% of batch work
+
+This is a dry run: nothing was changed.
+```
+
+The plan is honest. A device that would add almost nothing gets **standby**,
+with the reason and what to do about it:
+
+```console
+standby     oldbox   busy with other work (load 31.7 on 4 CPUs); would add only under 0.1% of the cluster's capacity
+
+SUGGESTIONS
+  - oldbox has capacity tied up in other work (load 31.7 on 4 CPUs). Free it up, then run `muster bench` and `muster plan` again.
+```
+
+How roles are decided: [ADR-0006](docs/adr/0006-role-planner.md).
+
+---
+
+## 7. Run at login
 
 ```console
 $ muster service install
@@ -365,6 +420,8 @@ Usage:
   muster token   [flags]   print this cluster's token
   muster join    [flags]   save a cluster token (paste it when prompted)
   muster doctor  [flags]   find out why a device isn't working, with fixes
+  muster bench   [flags]   measure devices and links; see when pooling helps
+  muster plan    [flags]   recommend a role for each device (dry run)
   muster service install [agent flags] | uninstall | status
                            run the agent at login (no sudo)
   muster version

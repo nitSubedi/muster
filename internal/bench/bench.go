@@ -16,11 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -223,28 +220,3 @@ func SplitBreakEven(sizeBytes int64, layers int, bandwidths []float64) time.Dura
 // Busy reports whether other work on the device is using most of its CPU,
 // so its measurements reflect what is free now, not what the hardware can do.
 func (d Device) Busy() bool { return d.CPUs > 0 && d.Load1 > float64(d.CPUs) }
-
-// Load1 returns the 1-minute load average (Linux, macOS), or 0.
-func Load1() float64 {
-	switch runtime.GOOS {
-	case "linux":
-		b, err := os.ReadFile("/proc/loadavg")
-		if err != nil {
-			return 0
-		}
-		f, _ := strconv.ParseFloat(strings.Fields(string(b))[0], 64)
-		return f
-	case "darwin":
-		out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
-		if err != nil {
-			return 0
-		}
-		fields := strings.Fields(strings.Trim(strings.TrimSpace(string(out)), "{}"))
-		if len(fields) == 0 {
-			return 0
-		}
-		f, _ := strconv.ParseFloat(fields[0], 64)
-		return f
-	}
-	return 0
-}

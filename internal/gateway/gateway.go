@@ -347,7 +347,7 @@ func (g *Gateway) BenchDevice(ctx context.Context, withLLM bool) bench.Device {
 	if self.MemoryBytes >= 8<<30 {
 		buf = 512 << 20
 	}
-	d := bench.Device{Name: self.Name, CPUs: self.CPUs, Load1: bench.Load1(), MemReadGBs: bench.MemRead(buf)}
+	d := bench.Device{Name: self.Name, CPUs: self.CPUs, Load1: node.Load1(), MemReadGBs: bench.MemRead(buf)}
 	if !withLLM {
 		return d
 	}

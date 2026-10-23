@@ -31,6 +31,7 @@ import (
 	"github.com/nitSubedi/muster/internal/node"
 	"github.com/nitSubedi/muster/internal/ollama"
 	"github.com/nitSubedi/muster/internal/peerauth"
+	"github.com/nitSubedi/muster/internal/plan"
 	"github.com/nitSubedi/muster/internal/registry"
 	"github.com/nitSubedi/muster/internal/service"
 	"github.com/nitSubedi/muster/internal/tlsid"
@@ -48,6 +49,7 @@ Usage:
   muster join    [flags]   save a cluster token (paste it when prompted)
   muster doctor  [flags]   find out why a device isn't working, with fixes
   muster bench   [flags]   measure devices and links; see when pooling helps
+  muster plan    [flags]   recommend a role for each device (dry run)
   muster service install [agent flags] | uninstall | status
                            run the agent at login (no sudo)
   muster version
@@ -74,6 +76,8 @@ func main() {
 		err = runDoctor(args)
 	case "bench":
 		err = runBench(args)
+	case "plan":
+		err = runPlan(args)
 	case "service":
 		err = runService(args)
 	case "version", "--version", "-v":
@@ -160,7 +164,7 @@ func runAgent(args []string) error {
 	refreshSelf := func(ctx context.Context) node.Info {
 		info := hw
 		info.ID, info.Name, info.Version, info.Backend = cfg.NodeID, *name, version, "ollama"
-		info.InFlight, info.Port = gw.InFlight(), port
+		info.InFlight, info.Port, info.Load1 = gw.InFlight(), port, node.Load1()
 		models, err := oc.Models(ctx)
 		info.BackendUp = err == nil
 		info.Models = models
@@ -393,7 +397,7 @@ func runBench(args []string) error {
 			fmt.Fprintf(os.Stderr, f+"\n", a...)
 		}
 	}
-	var report bench.Report
+	report := bench.Report{MeasuredAt: time.Now()}
 	self := rows[0].Info.Name
 
 	say("Benchmarking %s (this device)…", self)
@@ -429,6 +433,11 @@ func runBench(args []string) error {
 		report.Devices = append(report.Devices, d)
 	}
 
+	if b, err := json.MarshalIndent(report, "", "  "); err == nil {
+		if err := os.WriteFile(benchPath(*cfgPath), b, 0o600); err != nil {
+			say("could not save results for `muster plan`: %v", err)
+		}
+	}
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -436,6 +445,46 @@ func runBench(args []string) error {
 	}
 	fmt.Fprintln(os.Stderr)
 	report.Render(os.Stdout)
+	fmt.Fprintln(os.Stdout, "\nNext: `muster plan` recommends a role for each device from these numbers.")
+	return nil
+}
+
+func benchPath(cfgPath string) string { return filepath.Join(filepath.Dir(cfgPath), "bench.json") }
+
+func runPlan(args []string) error {
+	fs := flag.NewFlagSet("plan", flag.ExitOnError)
+	cfgPath := configFlag(fs)
+	addr := fs.String("addr", "http://127.0.0.1:7878", "local agent URL")
+	fs.Parse(args)
+
+	b, err := os.ReadFile(benchPath(*cfgPath))
+	if err != nil {
+		return fmt.Errorf("no measurements yet: run `muster bench` first (it takes a few minutes)")
+	}
+	var report bench.Report
+	if err := json.Unmarshal(b, &report); err != nil {
+		return fmt.Errorf("%s: %w", benchPath(*cfgPath), err)
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(strings.TrimRight(*addr, "/") + gateway.ClusterPath)
+	if err != nil {
+		return fmt.Errorf("no agent at %s: start one with `muster agent`", *addr)
+	}
+	var rows []registry.PeerStatus
+	json.NewDecoder(resp.Body).Decode(&rows)
+	resp.Body.Close()
+
+	in := plan.Input{Now: time.Now(), Bench: report}
+	for _, r := range rows {
+		name := r.Info.Name
+		if name == "" {
+			name = r.Addr
+		}
+		in.Live = append(in.Live, plan.Device{
+			Name: name, Healthy: r.Healthy, BackendUp: r.Info.BackendUp, CPUs: r.Info.CPUs,
+			Load1: r.Info.Load1, MemoryBytes: r.Info.AccelMemory(), Models: r.Info.Models,
+		})
+	}
+	plan.Make(in).Render(os.Stdout)
 	return nil
 }
 

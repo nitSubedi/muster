@@ -35,6 +35,8 @@ type Info struct {
 	BackendUp   bool    `json:"backend_up"`
 	Models      []Model `json:"models"`
 	InFlight    int     `json:"in_flight"`
+	// Load1 is the 1-minute load average when last reported (0 if unknown).
+	Load1 float64 `json:"load1,omitempty"`
 	// Port is the agent's API port, used for reachability probes.
 	Port int `json:"port,omitempty"`
 }
