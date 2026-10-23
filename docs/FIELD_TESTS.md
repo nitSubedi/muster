@@ -96,3 +96,30 @@ both say so instead of averaging it in.
 | F9 | Planner suggested moving embeddings to a device holding 0.4% of capacity | **Fixed:** a device must be free *and* hold ≥ 5% of capacity to take a role off another device |
 | F10 | A stale build that didn't report load made the busy box look idle to the planner | Live load is now part of node status; the plan reflects load at plan time |
 | F11 | Copying a new binary over a running one fails ("text file busy") | Test deploys now rename into place, as `install.sh` does |
+
+### Round 7: raw multiply-add experiments (`muster-lab`, 2026-10-22)
+
+Same Go kernel on both machines; weights stay resident on the worker, so only
+activations cross the network. Results verified against single-machine runs
+(max relative difference 3e-7 and 9e-6: ARM fuses multiply-adds and x86
+baseline code doesn't, so bit-exact equality across CPUs is the wrong check).
+
+| | laptop | linuxbox (load ≈ 30) |
+|---|---|---|
+| Multiply-add speed (Go kernel) | 30.4 GFLOP/s | 0.5 GFLOP/s |
+| Link | 5.8 ms round trip, ~14 MB/s | |
+
+| Experiment | Alone | Split | Result |
+|---|---|---|---|
+| 1. One 2048×2048 multiplication (17.2 GFLOP, 1 round trip) | 566 ms | 618 ms (98% / 1%) | 1.1× slower: the worker's 1% took longer than the laptop's 98% |
+| 2. 200 dependent 3584×3584 matrix-vector steps (one token of a 7B model) | 419 ms (2.1 ms/step) | 2,161 ms (11 ms/step) | 5.2× slower: 200 round trips × 5.8 ms = 1.17 s of pure waiting |
+
+**The two laws these numbers show:**
+1. *Independent work* pays off across a link only when **FLOPs per byte that
+   crosses > machine speed ÷ link speed**. Here 30 GFLOP/s ÷ 14 MB/s ≈ 2,100
+   FLOP/byte, while experiment 1 does ~512, so it would lose even against an
+   equally fast second machine on this Wi-Fi. Over gigabit Ethernet the bar is
+   ≈ 270, and it would win.
+2. *Dependent chains* pay one round trip per crossing step, so each step's work
+   must be much larger than the round trip. Here it's 2.1 ms of work against
+   5.8 ms of waiting.
